@@ -1,39 +1,49 @@
 #ifndef JETSMEARER_H
 #define JETSMEARER_H
 
-// JetSmearer v1.2
+// JetSmearer v2.0
 // smear the width of jet energy responses with just this header
 // Author: Nicholas Shawn Barnett
 
 // USAGE
 // Instantiate JetSmearer per jet cone/collection
 // Construct with JetResolutionObject, CMS JERC txt file format
-// Call .SmearedPt(recoPt, eta, rho, genPt) per jet
+// Call .SmearedPt(recoPt, eta, rho, genPt, eventID) per jet, genPt = -1 for
+// no gen match
 //
 //   JetSmearer smearer("Resolution_AK4PFchs.txt", "ScaleFactor_AK4PFchs.txt");
-//   double smearedPt = smearer.SmearedPt(jet.pt, jet.eta, event.rho, genPt);
+//   double smearedPt =
+//       smearer.SmearedPt(jet.pt, jet.eta, event.rho, genPt, event.evt);
+//
+// Smearing and random numbers follow JME's correctionlib JERSmear
+// (jer_smear.json): scaling 1 + (SF - 1)(pT - pT_gen)/pT, stochastic
+// 1 + sqrt(max(SF^2 - 1, 0)) sigma_JER N(0,1), with N seeded from a hash of
+// (pT, eta, rho, eventID) -- the same jet always gets the same smear, however
+// jobs are split. No pT floor.
 //
 // Method (constructor argument or SetMethod), default Hybrid:
 //   Hybrid     : Scaling for a well-matched gen jet, else Stochastic (JME
 //                recommendation, SmearedJetProducerT)
+//   JME        : exactly JERSmear -- genPt taken as given (match first, e.g.
+//                JetMatcher::Mode::JME), Scaling if genPt >= 0, else Stochastic
 //   Scaling    : well-matched jets only, the rest are left unsmeared
 //   Stochastic : Gaussian smearing of every jet, gen match ignored (e.g.
 //                legacy analyses that smeared with a Gaussian only)
 // "Well matched": genPt >= 0 and |recoPt - genPt| < 3 sigma_JER recoPt
 //
 //   JetSmearer gaus("Resolution_AK4PFchs.txt", "ScaleFactor_AK4PFchs.txt",
-//                   JetSmearer::kDefaultSeed, JetSmearing::Method::Stochastic);
+//                   JetSmearing::Method::Stochastic);
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <initializer_list>
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -676,17 +686,21 @@ private:
 
 // END VENDORED CODE
 
-// below implements same algorithm as
+// below implements JME's correctionlib JERSmear (jer_smear.json) and the
+// hybrid method of
 // cms-sw/cmssw/tree/master/PhysicsTools/PatUtils/interface/SmearedJetProducerT.h
 
 namespace JetSmearing {
 
-enum class Method { Hybrid, Scaling, Stochastic };
+enum class Method { Hybrid, JME, Scaling, Stochastic };
 
-// "hybrid" | "scaling" | "stochastic", throws otherwise
+// "hybrid" | "jme" | "scaling" | "stochastic", throws otherwise
 inline Method MethodFromString(const std::string &name) {
   if (name == "hybrid") {
     return Method::Hybrid;
+  }
+  if (name == "jme") {
+    return Method::JME;
   }
   if (name == "scaling") {
     return Method::Scaling;
@@ -694,8 +708,150 @@ inline Method MethodFromString(const std::string &name) {
   if (name == "stochastic") {
     return Method::Stochastic;
   }
-  throw std::invalid_argument("JetSmearing: unknown method \"" + name +
-                              "\", expected hybrid, scaling or stochastic");
+  throw std::invalid_argument(
+      "JetSmearing: unknown method \"" + name +
+      "\", expected hybrid, jme, scaling or stochastic");
+}
+
+// correctionlib's hashprng, distribution "normal": XXH64 of the inputs' 64-bit
+// patterns (seed 0) seeds pcg32_oneseq, then a Marsaglia polar draw
+namespace detail {
+
+constexpr std::uint64_t kP1 = 11400714785074694791ULL;
+constexpr std::uint64_t kP2 = 14029467366897019727ULL;
+constexpr std::uint64_t kP3 = 1609587929392839161ULL;
+constexpr std::uint64_t kP4 = 9650029242287828579ULL;
+constexpr std::uint64_t kP5 = 2870177450012600261ULL;
+
+inline std::uint64_t Rotl64(std::uint64_t x, int r) {
+  return (x << r) | (x >> (64 - r));
+}
+
+inline std::uint64_t Read64(const unsigned char *p) {
+  std::uint64_t v;
+  std::memcpy(&v, p, 8);
+  return v;
+}
+
+inline std::uint64_t Round64(std::uint64_t acc, std::uint64_t in) {
+  acc += in * kP2;
+  return Rotl64(acc, 31) * kP1;
+}
+
+inline std::uint64_t Merge64(std::uint64_t acc, std::uint64_t val) {
+  acc ^= Round64(0, val);
+  return acc * kP1 + kP4;
+}
+
+// XXH64 (xxHash, Yann Collet, BSD 2-clause), little-endian
+inline std::uint64_t XXH64(const void *input, std::size_t len,
+                           std::uint64_t seed) {
+  const unsigned char *p = (const unsigned char *)input;
+  const unsigned char *end = p + len;
+  std::uint64_t h;
+  if (len >= 32) {
+    const unsigned char *limit = end - 32;
+    std::uint64_t v1 = seed + kP1 + kP2, v2 = seed + kP2, v3 = seed,
+                  v4 = seed - kP1;
+    do {
+      v1 = Round64(v1, Read64(p));
+      v2 = Round64(v2, Read64(p + 8));
+      v3 = Round64(v3, Read64(p + 16));
+      v4 = Round64(v4, Read64(p + 24));
+      p += 32;
+    } while (p <= limit);
+    h = Rotl64(v1, 1) + Rotl64(v2, 7) + Rotl64(v3, 12) + Rotl64(v4, 18);
+    h = Merge64(h, v1);
+    h = Merge64(h, v2);
+    h = Merge64(h, v3);
+    h = Merge64(h, v4);
+  } else {
+    h = seed + kP5;
+  }
+  h += (std::uint64_t)len;
+  while (p + 8 <= end) {
+    h ^= Round64(0, Read64(p));
+    h = Rotl64(h, 27) * kP1 + kP4;
+    p += 8;
+  }
+  if (p + 4 <= end) {
+    std::uint32_t v;
+    std::memcpy(&v, p, 4);
+    h ^= (std::uint64_t)v * kP1;
+    h = Rotl64(h, 23) * kP2 + kP3;
+    p += 4;
+  }
+  while (p < end) {
+    h ^= (*p) * kP5;
+    h = Rotl64(h, 11) * kP1;
+    p++;
+  }
+  h ^= h >> 33;
+  h *= kP2;
+  h ^= h >> 29;
+  h *= kP3;
+  h ^= h >> 32;
+  return h;
+}
+
+// pcg32_oneseq (pcg-cpp): 64-bit LCG state, XSH RR output of the old state
+class Pcg32 {
+public:
+  explicit Pcg32(std::uint64_t seed) : state_(Bump(seed + kInc)) {}
+  std::uint32_t operator()() {
+    const std::uint64_t old = state_;
+    state_ = Bump(state_);
+    const std::uint32_t xsh = (std::uint32_t)(((old >> 18) ^ old) >> 27);
+    const unsigned rot = (unsigned)(old >> 59);
+    return (xsh >> rot) | (xsh << ((32 - rot) & 31));
+  }
+
+private:
+  static constexpr std::uint64_t kMult = 6364136223846793005ULL;
+  static constexpr std::uint64_t kInc = 1442695040888963407ULL;
+  static std::uint64_t Bump(std::uint64_t s) { return s * kMult + kInc; }
+  std::uint64_t state_;
+};
+
+// rounds a product before it's added, so no compiler fuses the two (FMA) and
+// results don't depend on -ffp-contract
+inline double Rounded(double x) {
+  volatile double r = x;
+  return r;
+}
+
+} // namespace detail
+
+// N(0,1) from (pT, eta, rho, eventID), bit for bit as JERSmear's hashprng
+// (u*u + v*v fused as correctionlib's build has it; verified against
+// correctionlib 2.9.0 on jer_smear.json, 200k jets)
+inline double HashNormal(double pt, double eta, double rho,
+                         std::int64_t eventID) {
+  std::uint64_t data[4];
+  std::memcpy(&data[0], &pt, 8);
+  std::memcpy(&data[1], &eta, 8);
+  std::memcpy(&data[2], &rho, 8);
+  data[3] = (std::uint64_t)eventID;
+  detail::Pcg32 gen(detail::XXH64(data, sizeof(data), 0));
+  double u, v, s;
+  do {
+    u = std::ldexp((double)gen(), -31) - 1;
+    v = std::ldexp((double)gen(), -31) - 1;
+    s = std::fma(u, u, detail::Rounded(v * v));
+  } while (s >= 1.0 || s == 0.0);
+  return u * std::sqrt(-2.0 * std::log(s) / s);
+}
+
+// JERSmear: genPt >= 0 scaling, genPt < 0 stochastic
+inline double JERSmear(double pt, double eta, double genPt, double rho,
+                       std::int64_t eventID, double jer, double jersf) {
+  if (genPt >= 0) {
+    return 1 + (jersf - 1) * (pt - genPt) / pt;
+  }
+  const double n = HashNormal(pt, eta, rho, eventID);
+  const double m = detail::Rounded(jersf * jersf) - 1;
+  const double t = std::sqrt(std::max(m, 0.0)) * jer;
+  return 1 + detail::Rounded(t * n);
 }
 
 struct Result {
@@ -709,9 +865,10 @@ struct Result {
 // this function requires user provides existing gen matched jet pt
 inline Result
 ComputeSmearFactor(double recoPt, double eta, double rho, double genPt,
+                   std::int64_t eventID,
                    const JetSmearerJME::JetResolution &resolution,
                    const JetSmearerJME::JetResolutionScaleFactor &resolutionSF,
-                   std::mt19937 &rng, Variation variation = Variation::NOMINAL,
+                   Variation variation = Variation::NOMINAL,
                    const std::string &uncertaintySource = "",
                    double dPtMaxFactor = 3.0, Method method = Method::Hybrid) {
   Result r;
@@ -725,69 +882,63 @@ ComputeSmearFactor(double recoPt, double eta, double rho, double genPt,
   const bool wellMatched =
       genPt >= 0 &&
       std::abs(recoPt - genPt) < dPtMaxFactor * r.resolution * recoPt;
-  if (method != Method::Stochastic && wellMatched) {
-    // scaling method
-    r.matched = true;
-    r.smearFactor = 1.0 + (r.scaleFactor - 1.0) * (recoPt - genPt) / recoPt;
-  } else if (method != Method::Scaling && r.scaleFactor > 1.0) {
-    // stochastic method
-    double sigma =
-        r.resolution * std::sqrt(r.scaleFactor * r.scaleFactor - 1.0);
-    std::normal_distribution<double> d(0.0, sigma);
-    r.smearFactor = 1.0 + d(rng);
+  double useGen = -1; // stochastic
+  if (method == Method::JME) {
+    useGen = genPt;
+  } else if (method != Method::Stochastic && wellMatched) {
+    useGen = genPt;
+  } else if (method == Method::Scaling) {
+    return r; // unmatched, left alone
   }
+  r.matched = useGen >= 0;
+  r.smearFactor =
+      JERSmear(recoPt, eta, useGen, rho, eventID, r.resolution, r.scaleFactor);
   return r;
 }
 
-// pT floor mirrors SmearedJetProducerT's MIN_JET_ENERGY to avoid negative/flipped jet(s)
-inline double SmearedPt(double recoPt, double smearFactor,
-                        double minPt = 1e-2) {
-  double smeared = recoPt * smearFactor;
-  return (smeared < minPt) ? minPt : smeared;
+inline double SmearedPt(double recoPt, double smearFactor) {
+  return recoPt * smearFactor;
 }
 
 } // namespace JetSmearing
 
 class JetSmearer {
 public:
-  // Mirrors SmearedJetProducerT.h default seed
-  static constexpr std::uint32_t kDefaultSeed = 37428479;
-
   JetSmearer(const std::string &resolutionFile,
              const std::string &scaleFactorFile,
-             std::uint32_t seed = kDefaultSeed,
              JetSmearing::Method method = JetSmearing::Method::Hybrid)
-      : resolution_(resolutionFile), scaleFactor_(scaleFactorFile), rng_(seed),
+      : resolution_(resolutionFile), scaleFactor_(scaleFactorFile),
         method_(method) {}
 
   void SetMethod(JetSmearing::Method method) { method_ = method; }
+  JetSmearing::Method GetMethod() const { return method_; }
 
-  // sigma_JER from the resolution file, no random draw (e.g. for
-  // JetMatcher::Mode::JME)
+  // sigma_JER from the resolution file (e.g. for JetMatcher::Mode::JME)
   double Resolution(double pt, double eta, double rho) const {
     return resolution_.getResolution(
         JetSmearerJME::JetParameters().setJetPt(pt).setJetEta(eta).setRho(rho));
   }
-  JetSmearing::Method GetMethod() const { return method_; }
 
   // smear factor, resolution/scale factor used, scaling or stochastic
   // see JetSmearing::Result above
   JetSmearing::Result Smear(double recoPt, double eta, double rho, double genPt,
+                            std::int64_t eventID,
                             Variation variation = Variation::NOMINAL,
                             const std::string &uncertaintySource = "",
-                            double dPtMaxFactor = 3.0) {
+                            double dPtMaxFactor = 3.0) const {
     return JetSmearing::ComputeSmearFactor(
-        recoPt, eta, rho, genPt, resolution_, scaleFactor_, rng_, variation,
+        recoPt, eta, rho, genPt, eventID, resolution_, scaleFactor_, variation,
         uncertaintySource, dPtMaxFactor, method_);
   }
 
-  // in: reco jet {pT, eta, rho}, gen matched jet pT
+  // in: reco jet {pT, eta, rho}, gen matched jet pT, event number
   // out: smeared reco jet pT
   double SmearedPt(double recoPt, double eta, double rho, double genPt,
+                   std::int64_t eventID,
                    Variation variation = Variation::NOMINAL,
                    const std::string &uncertaintySource = "",
-                   double dPtMaxFactor = 3.0) {
-    JetSmearing::Result r = Smear(recoPt, eta, rho, genPt, variation,
+                   double dPtMaxFactor = 3.0) const {
+    JetSmearing::Result r = Smear(recoPt, eta, rho, genPt, eventID, variation,
                                   uncertaintySource, dPtMaxFactor);
     return JetSmearing::SmearedPt(recoPt, r.smearFactor);
   }
@@ -795,7 +946,6 @@ public:
 private:
   JetSmearerJME::JetResolution resolution_;
   JetSmearerJME::JetResolutionScaleFactor scaleFactor_;
-  std::mt19937 rng_;
   JetSmearing::Method method_;
 };
 
