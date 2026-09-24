@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,36 @@ static void TestCompose() {
   Check(genpt[match[order[2]]] == 38, "third reco jet's gen pT");
 }
 
+// JME: dR < R/2 and |pT - pT_gen| < 3 sigma pT, closest passing pair
+static void TestJME() {
+  std::printf("Mode::JME\n");
+  // reco jet: pT 100, sigma 0.1 -> window |dpT| < 30
+  const float jtpt[1] = {100};
+  const float jteta[1] = {0.0f};
+  const float jtphi[1] = {0.0f};
+  const double sigma[1] = {0.1};
+  // gen 0: dR 0.05 but pT 60 (fails the window); gen 1: dR 0.15, pT 95
+  const float genpt[2] = {60, 95};
+  const float geneta[2] = {0.05f, 0.15f};
+  const float genphi[2] = {0.0f, 0.0f};
+  Check(Match(1, jteta, jtphi, 2, geneta, genphi, 0.4) == std::vector<int>({0}),
+        "Unique ignores pT: closest gen 0");
+  Check(Match(1, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::JME, 0.5, jtpt,
+              genpt, sigma) == std::vector<int>({1}),
+        "JME skips gen 0 (outside 3 sigma), takes gen 1");
+  const float lowpt[2] = {60, 50};
+  Check(Match(1, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::JME, 0.5, jtpt,
+              lowpt, sigma) == std::vector<int>({-1}),
+        "JME: nothing inside the window, -1");
+  bool threw = false;
+  try {
+    Match(1, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::JME);
+  } catch (const std::invalid_argument &) {
+    threw = true;
+  }
+  Check(threw, "JME without pT/sigma arrays throws");
+}
+
 // default mode on random events: no gen jet used twice, all within R/2
 static void TestOneToOne() {
   std::printf("one to one on random events\n");
@@ -142,6 +173,7 @@ int main() {
   TestModes();
   TestCompose();
   TestOneToOne();
+  TestJME();
   std::printf("%d/%d checks passed\n", nCheck - nFail, nCheck);
   return nFail == 0 ? 0 : 1;
 }

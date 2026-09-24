@@ -23,16 +23,29 @@
 //   JetMatcher::Match(nref, jteta, jtphi, ngen, geneta, genphi, 0.4,
 //                     JetMatcher::Mode::Unique, 1.0);
 //
+// JME: JER twiki / CMSSW SmearedJetProducerT matching -- each reco jet takes
+// the closest gen jet with dR < R/2 and |pT - pT_gen| < 3 sigma_JER pT
+// (JEC-corrected pT, sigma_JER per reco jet, e.g. JetSmearer::Resolution):
+//
+//   std::vector<double> sigma(nref);
+//   for (int i = 0; i < nref; i++) {
+//     sigma[i] = smearer.Resolution(ptCorr[i], jteta[i], rho);
+//   }
+//   JetMatcher::Match(nref, jteta, jtphi, ngen, geneta, genphi, 0.4,
+//                     JetMatcher::Mode::JME, 0.5, ptCorr, genpt,
+//                     sigma.data());
+//
 // Composes with JetSorter: match[order[0]] is the leading jet's gen jet
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <tuple>
 #include <vector>
 
 namespace JetMatcher {
 
-enum class Mode { Nearest, Unique };
+enum class Mode { Nearest, Unique, JME };
 
 inline double DeltaR(double eta1, double phi1, double eta2, double phi2) {
   const double dphi = std::remainder(phi1 - phi2, 2 * M_PI);
@@ -43,13 +56,23 @@ inline double DeltaR(double eta1, double phi1, double eta2, double phi2) {
 template <typename T>
 std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
                        const T *geneta, const T *genphi, double coneR,
-                       Mode mode = Mode::Unique, double dRFraction = 0.5) {
+                       Mode mode = Mode::Unique, double dRFraction = 0.5,
+                       const T *jtpt = nullptr, const T *genpt = nullptr,
+                       const double *sigmaJER = nullptr, double nSigma = 3.0) {
   const double maxDR = dRFraction * coneR;
   std::vector<int> match(nref, -1);
-  if (mode == Mode::Nearest) {
+  if (mode == Mode::JME && (!jtpt || !genpt || !sigmaJER)) {
+    throw std::invalid_argument(
+        "JetMatcher: Mode::JME needs jtpt, genpt and sigmaJER");
+  }
+  if (mode == Mode::Nearest || mode == Mode::JME) {
     for (int i = 0; i < nref; i++) {
       double best = maxDR;
       for (int g = 0; g < ngen; g++) {
+        if (mode == Mode::JME &&
+            std::abs(jtpt[i] - genpt[g]) >= nSigma * sigmaJER[i] * jtpt[i]) {
+          continue;
+        }
         const double dr = DeltaR(jteta[i], jtphi[i], geneta[g], genphi[g]);
         if (dr < best) {
           best = dr;

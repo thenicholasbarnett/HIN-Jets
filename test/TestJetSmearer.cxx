@@ -157,6 +157,22 @@ static void TestMethods() {
   Check(threw, "MethodFromString rejects unknown names");
 }
 
+static void TestResolution() {
+  std::printf("Resolution accessor\n");
+  JetSmearer a(ResolutionFile(), ScaleFactorFile(), 5);
+  JetSmearer b(ResolutionFile(), ScaleFactorFile(), 5);
+  Near(a.Resolution(100.0, 0.5, 1.5), 0.2, 1e-6, "sigma_JER eta >= 0");
+  Near(a.Resolution(100.0, -0.5, 1.5), 0.1, 1e-6, "sigma_JER eta < 0");
+  // Resolution() draws nothing: same seed, same smearing sequence
+  bool same = true;
+  for (int i = 0; i < 10; i++) {
+    a.Resolution(100.0, 0.5, 1.5);
+    same = same && a.Smear(100.0, 0.5, 1.5, -1.0).smearFactor ==
+                       b.Smear(100.0, 0.5, 1.5, -1.0).smearFactor;
+  }
+  Check(same, "Resolution() leaves the random sequence alone");
+}
+
 static void TestEdges() {
   std::printf("edges\n");
   JetSmearer s(ResolutionFile(), ScaleFactorFile());
@@ -192,8 +208,8 @@ static void TestRealFiles() {
         continue;
       }
       std::string res = dir + "/" + name;
-      std::string sf = dir + "/" + name.substr(0, at) + "_SF_" +
-                       name.substr(at + 14);
+      std::string sf =
+          dir + "/" + name.substr(0, at) + "_SF_" + name.substr(at + 14);
       JetSmearer s(res, sf);
       JetSmearing::Result r = s.Smear(100.0, 0.5, 5.0, 98.0);
       Check(r.resolution > 0.03 && r.resolution < 0.3,
@@ -215,6 +231,7 @@ int main() {
   TestMatched();
   TestStochastic();
   TestMethods();
+  TestResolution();
   TestEdges();
   TestRealFiles();
   std::printf("%d/%d checks passed\n", nCheck - nFail, nCheck);

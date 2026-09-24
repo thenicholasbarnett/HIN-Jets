@@ -1,7 +1,7 @@
 #ifndef JETSMEARER_H
 #define JETSMEARER_H
 
-// JetSmearer v1.1
+// JetSmearer v1.2
 // smear the width of jet energy responses with just this header
 // Author: Nicholas Shawn Barnett
 
@@ -761,6 +761,13 @@ public:
         method_(method) {}
 
   void SetMethod(JetSmearing::Method method) { method_ = method; }
+
+  // sigma_JER from the resolution file, no random draw (e.g. for
+  // JetMatcher::Mode::JME)
+  double Resolution(double pt, double eta, double rho) const {
+    return resolution_.getResolution(
+        JetSmearerJME::JetParameters().setJetPt(pt).setJetEta(eta).setRho(rho));
+  }
   JetSmearing::Method GetMethod() const { return method_; }
 
   // smear factor, resolution/scale factor used, scaling or stochastic
