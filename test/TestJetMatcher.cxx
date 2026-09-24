@@ -1,6 +1,6 @@
 // TestJetMatcher
-// reco to gen maps on hand-made jets: dR limit, phi wrap, nearest vs unique,
-// and composing with JetSorter
+// reco to gen maps on hand-made jets: dR limit, phi wrap, nearest vs one to
+// one, and composing with JetSorter
 
 #include "JetMatcher.h"
 #include "JetSorter.h"
@@ -57,7 +57,7 @@ static void TestPhiWrap() {
 }
 
 static void TestModes() {
-  std::printf("nearest vs unique\n");
+  std::printf("nearest vs one to one\n");
   // reco 0 at dR 0.05 from gen 0; reco 1 at dR 0.03 from gen 0 and 0.15
   // from gen 1
   const float jteta[2] = {0.05f, -0.03f};
@@ -69,11 +69,12 @@ static void TestModes() {
         "nearest: both reco jets take gen 0");
   Check(Match(2, jteta, jtphi, 2, geneta, genphi, 0.4) ==
             std::vector<int>({-1, 0}),
-        "unique (default): gen 0 to the closer reco 1, reco 0 has nothing else "
+        "one to one (default): gen 0 to the closer reco 1, reco 0 has nothing "
+        "else "
         "in 0.2");
-  Check(Match(2, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::Unique, 0.75) ==
+  Check(Match(2, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::OneToOne, 0.75) ==
             std::vector<int>({1, 0}),
-        "unique, dR < 0.75 R = 0.3: reco 0 falls back to gen 1");
+        "one to one, dR < 0.75 R = 0.3: reco 0 falls back to gen 1");
 }
 
 static void TestCompose() {
@@ -104,7 +105,7 @@ static void TestJME() {
   const float geneta[2] = {0.05f, 0.15f};
   const float genphi[2] = {0.0f, 0.0f};
   Check(Match(1, jteta, jtphi, 2, geneta, genphi, 0.4) == std::vector<int>({0}),
-        "Unique ignores pT: closest gen 0");
+        "OneToOne ignores pT: closest gen 0");
   Check(Match(1, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::JME, 0.5, jtpt,
               genpt, sigma) == std::vector<int>({1}),
         "JME skips gen 0 (outside 3 sigma), takes gen 1");
@@ -119,6 +120,11 @@ static void TestJME() {
     threw = true;
   }
   Check(threw, "JME without pT/sigma arrays throws");
+  std::vector<double> none;
+  Check(Match(0, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::JME, 0.5,
+              (const float *)nullptr, genpt, none.data())
+            .empty(),
+        "JME with no reco jets (empty sigma vector) doesn't throw");
 }
 
 // default mode on random events: no gen jet used twice, all within R/2
@@ -162,8 +168,8 @@ static void TestOneToOne() {
       }
     }
   }
-  Check(unique, "Unique: no gen jet matched twice");
-  Check(inCone, "Unique: every match within R/2");
+  Check(unique, "OneToOne: no gen jet matched twice");
+  Check(inCone, "OneToOne: every match within R/2");
   Check(nShared > 0, "the events do have shared gen jets under Nearest");
 }
 

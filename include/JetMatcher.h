@@ -15,13 +15,13 @@
 //   int g = match[i];
 //   double genPt = (g >= 0) ? genpt[g] : -1; // -1 = unmatched, for JetSmearer
 //
-// Unique (default): one to one, closest pairs first, so no jet is matched
+// OneToOne (default): one to one, closest pairs first, so no jet is matched
 // twice. Nearest: each reco jet takes its closest gen jet, which two reco
 // jets can share. dRFraction sets the limit as a fraction of R; the forest's
-// ref* matching is Unique with dR < R:
+// ref* matching is OneToOne with dR < R:
 //
 //   JetMatcher::Match(nref, jteta, jtphi, ngen, geneta, genphi, 0.4,
-//                     JetMatcher::Mode::Unique, 1.0);
+//                     JetMatcher::Mode::OneToOne, 1.0);
 //
 // JME: JER twiki / CMSSW SmearedJetProducerT matching -- each reco jet takes
 // the closest gen jet with dR < R/2 and |pT - pT_gen| < 3 sigma_JER pT
@@ -45,7 +45,7 @@
 
 namespace JetMatcher {
 
-enum class Mode { Nearest, Unique, JME };
+enum class Mode { Nearest, OneToOne, JME };
 
 inline double DeltaR(double eta1, double phi1, double eta2, double phi2) {
   const double dphi = std::remainder(phi1 - phi2, 2 * M_PI);
@@ -56,12 +56,14 @@ inline double DeltaR(double eta1, double phi1, double eta2, double phi2) {
 template <typename T>
 std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
                        const T *geneta, const T *genphi, double coneR,
-                       Mode mode = Mode::Unique, double dRFraction = 0.5,
+                       Mode mode = Mode::OneToOne, double dRFraction = 0.5,
                        const T *jtpt = nullptr, const T *genpt = nullptr,
                        const double *sigmaJER = nullptr, double nSigma = 3.0) {
   const double maxDR = dRFraction * coneR;
   std::vector<int> match(nref, -1);
-  if (mode == Mode::JME && (!jtpt || !genpt || !sigmaJER)) {
+  // arrays only needed with jets to compare (empty vectors give nullptr)
+  if (mode == Mode::JME && nref > 0 && ngen > 0 &&
+      (!jtpt || !genpt || !sigmaJER)) {
     throw std::invalid_argument(
         "JetMatcher: Mode::JME needs jtpt, genpt and sigmaJER");
   }
@@ -83,7 +85,7 @@ std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
     return match;
   }
 
-  // unique: every pair within maxDR, smallest dR first
+  // one to one: every pair within maxDR, smallest dR first
   std::vector<std::tuple<double, int, int>> pairs;
   for (int i = 0; i < nref; i++) {
     for (int g = 0; g < ngen; g++) {
