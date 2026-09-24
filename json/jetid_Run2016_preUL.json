@@ -1,0 +1,291 @@
+{
+ "schema_version": 2,
+ "description": "AK4CHS TightLepVeto jet ID, pre-UL Run 2016, hand-encoded from twiki CMS/JetID13TeVRun2016 r14 (80X). Not an official JME payload.",
+ "corrections": [
+  {
+   "name": "AK4CHS_TightLeptonVeto",
+   "description": "TightLepVeto; Tight where the twiki has no LepVeto column (|eta| > 2.7)",
+   "version": 0,
+   "inputs": [
+    {
+     "name": "eta",
+     "type": "real"
+    },
+    {
+     "name": "chHEF",
+     "type": "real"
+    },
+    {
+     "name": "neHEF",
+     "type": "real"
+    },
+    {
+     "name": "chEmEF",
+     "type": "real"
+    },
+    {
+     "name": "neEmEF",
+     "type": "real"
+    },
+    {
+     "name": "muEF",
+     "type": "real"
+    },
+    {
+     "name": "chMultiplicity",
+     "type": "int"
+    },
+    {
+     "name": "neMultiplicity",
+     "type": "int"
+    },
+    {
+     "name": "multiplicity",
+     "type": "int"
+    }
+   ],
+   "output": {
+    "name": "jet id",
+    "type": "real"
+   },
+   "data": {
+    "nodetype": "transform",
+    "input": "eta",
+    "rule": {
+     "nodetype": "formula",
+     "expression": "abs(x)",
+     "parser": "TFormula",
+     "variables": [
+      "eta"
+     ]
+    },
+    "content": {
+     "nodetype": "binning",
+     "input": "eta",
+     "edges": [
+      0.0,
+      2.4,
+      2.7,
+      3.0,
+      1000000000.0
+     ],
+     "content": [
+      {
+       "nodetype": "binning",
+       "input": "neHEF",
+       "edges": [
+        -1000000000.0,
+        0.9,
+        1000000000.0
+       ],
+       "content": [
+        {
+         "nodetype": "binning",
+         "input": "neEmEF",
+         "edges": [
+          -1000000000.0,
+          0.9,
+          1000000000.0
+         ],
+         "content": [
+          {
+           "nodetype": "binning",
+           "input": "multiplicity",
+           "edges": [
+            -1000000000.0,
+            2,
+            1000000000.0
+           ],
+           "content": [
+            0.0,
+            {
+             "nodetype": "binning",
+             "input": "muEF",
+             "edges": [
+              -1000000000.0,
+              0.8,
+              1000000000.0
+             ],
+             "content": [
+              {
+               "nodetype": "binning",
+               "input": "chHEF",
+               "edges": [
+                -1000000000.0,
+                1e-12,
+                1000000000.0
+               ],
+               "content": [
+                0.0,
+                {
+                 "nodetype": "binning",
+                 "input": "chMultiplicity",
+                 "edges": [
+                  -1000000000.0,
+                  1,
+                  1000000000.0
+                 ],
+                 "content": [
+                  0.0,
+                  {
+                   "nodetype": "binning",
+                   "input": "chEmEF",
+                   "edges": [
+                    -1000000000.0,
+                    0.9,
+                    1000000000.0
+                   ],
+                   "content": [
+                    1.0,
+                    0.0
+                   ],
+                   "flow": "clamp"
+                  }
+                 ],
+                 "flow": "clamp"
+                }
+               ],
+               "flow": "clamp"
+              },
+              0.0
+             ],
+             "flow": "clamp"
+            }
+           ],
+           "flow": "clamp"
+          },
+          0.0
+         ],
+         "flow": "clamp"
+        },
+        0.0
+       ],
+       "flow": "clamp"
+      },
+      {
+       "nodetype": "binning",
+       "input": "neHEF",
+       "edges": [
+        -1000000000.0,
+        0.9,
+        1000000000.0
+       ],
+       "content": [
+        {
+         "nodetype": "binning",
+         "input": "neEmEF",
+         "edges": [
+          -1000000000.0,
+          0.9,
+          1000000000.0
+         ],
+         "content": [
+          {
+           "nodetype": "binning",
+           "input": "multiplicity",
+           "edges": [
+            -1000000000.0,
+            2,
+            1000000000.0
+           ],
+           "content": [
+            0.0,
+            {
+             "nodetype": "binning",
+             "input": "muEF",
+             "edges": [
+              -1000000000.0,
+              0.8,
+              1000000000.0
+             ],
+             "content": [
+              1.0,
+              0.0
+             ],
+             "flow": "clamp"
+            }
+           ],
+           "flow": "clamp"
+          },
+          0.0
+         ],
+         "flow": "clamp"
+        },
+        0.0
+       ],
+       "flow": "clamp"
+      },
+      {
+       "nodetype": "binning",
+       "input": "neHEF",
+       "edges": [
+        -1000000000.0,
+        0.98,
+        1000000000.0
+       ],
+       "content": [
+        {
+         "nodetype": "binning",
+         "input": "neEmEF",
+         "edges": [
+          -1000000000.0,
+          0.01,
+          1000000000.0
+         ],
+         "content": [
+          0.0,
+          {
+           "nodetype": "binning",
+           "input": "neMultiplicity",
+           "edges": [
+            -1000000000.0,
+            3,
+            1000000000.0
+           ],
+           "content": [
+            0.0,
+            1.0
+           ],
+           "flow": "clamp"
+          }
+         ],
+         "flow": "clamp"
+        },
+        0.0
+       ],
+       "flow": "clamp"
+      },
+      {
+       "nodetype": "binning",
+       "input": "neEmEF",
+       "edges": [
+        -1000000000.0,
+        0.9,
+        1000000000.0
+       ],
+       "content": [
+        {
+         "nodetype": "binning",
+         "input": "neMultiplicity",
+         "edges": [
+          -1000000000.0,
+          11,
+          1000000000.0
+         ],
+         "content": [
+          0.0,
+          1.0
+         ],
+         "flow": "clamp"
+        },
+        0.0
+       ],
+       "flow": "clamp"
+      }
+     ],
+     "flow": "clamp"
+    }
+   }
+  }
+ ]
+}
