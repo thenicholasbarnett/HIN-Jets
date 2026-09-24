@@ -1,27 +1,35 @@
-#ifndef JETMATCHER_H
-#define JETMATCHER_H
+#ifndef JETMAPPER_H
+#define JETMAPPER_H
 
-// JetMatcher v1.0
-// reco to gen jet matching of forest-style jet arrays with just this header
+// JetMapper v1.0
+// index maps over forest-style jet arrays with just this header: pT order,
+// and reco to gen matching
 // Author: Nicholas Shawn Barnett
 
 // USAGE
-// JetMatcher::Match(...) returns an nref-long index map, reco to gen:
-// match[i] is the gen jet matched to reco jet i, or -1 for none, within
-// dR < R/2 for cone radius R (JME convention)
+// Every map is an index array, read any jet array through it
 //
-//   std::vector<int> match = JetMatcher::Match(nref, jteta, jtphi,
-//                                              ngen, geneta, genphi, 0.4);
-//   int g = match[i];
-//   double genPt = (g >= 0) ? genpt[g] : -1; // -1 = unmatched, for JetSmearer
+// Order(n, pt): n-long, highest pT first -- order[i] is the original index
+// of the i-th hardest jet
 //
+//   std::vector<int> order = JetMapper::Order(nref, ptCorr);
+//   float leadEta = jteta[order[0]];
+//
+// Match(...): nref-long, reco to gen -- match[i] is the gen jet matched to
+// reco jet i, or JetMapper::kUnmatched (-999, as the forest's refpt) for
+// none. Check it before indexing, jtpt[-999] is out of bounds
+//
+//   std::vector<int> match = JetMapper::Match(nref, jteta, jtphi,
+//                                             ngen, geneta, genphi, 0.4);
+//
+// Match modes, dR < R/2 for cone radius R by default (JME convention):
 // OneToOne (default): one to one, closest pairs first, so no jet is matched
 // twice. Nearest: each reco jet takes its closest gen jet, which two reco
 // jets can share. dRFraction sets the limit as a fraction of R; the forest's
 // ref* matching is OneToOne with dR < R:
 //
-//   JetMatcher::Match(nref, jteta, jtphi, ngen, geneta, genphi, 0.4,
-//                     JetMatcher::Mode::OneToOne, 1.0);
+//   JetMapper::Match(nref, jteta, jtphi, ngen, geneta, genphi, 0.4,
+//                    JetMapper::Mode::OneToOne, 1.0);
 //
 // JME: JER twiki / CMSSW SmearedJetProducerT matching -- each reco jet takes
 // the closest gen jet with dR < R/2 and |pT - pT_gen| < 3 sigma_JER pT
@@ -31,19 +39,31 @@
 //   for (int i = 0; i < nref; i++) {
 //     sigma[i] = smearer.Resolution(ptCorr[i], jteta[i], rho);
 //   }
-//   JetMatcher::Match(nref, jteta, jtphi, ngen, geneta, genphi, 0.4,
-//                     JetMatcher::Mode::JME, 0.5, ptCorr, genpt,
-//                     sigma.data());
+//   JetMapper::Match(nref, jteta, jtphi, ngen, geneta, genphi, 0.4,
+//                    JetMapper::Mode::JME, 0.5, ptCorr, genpt, sigma.data());
 //
-// Composes with JetSorter: match[order[0]] is the leading jet's gen jet
+// Maps compose: match[order[0]] is the leading jet's gen jet
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
 #include <tuple>
 #include <vector>
 
-namespace JetMatcher {
+namespace JetMapper {
+
+// unmatched entry of a map, same filler as the forest's refpt
+constexpr int kUnmatched = -999;
+
+// equal pT keep their original order
+template <typename T> std::vector<int> Order(int n, const T *pt) {
+  std::vector<int> order(n);
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(),
+                   [&](int a, int b) { return pt[a] > pt[b]; });
+  return order;
+}
 
 enum class Mode { Nearest, OneToOne, JME };
 
@@ -60,12 +80,12 @@ std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
                        const T *jtpt = nullptr, const T *genpt = nullptr,
                        const double *sigmaJER = nullptr, double nSigma = 3.0) {
   const double maxDR = dRFraction * coneR;
-  std::vector<int> match(nref, -1);
+  std::vector<int> match(nref, kUnmatched);
   // arrays only needed with jets to compare (empty vectors give nullptr)
   if (mode == Mode::JME && nref > 0 && ngen > 0 &&
       (!jtpt || !genpt || !sigmaJER)) {
     throw std::invalid_argument(
-        "JetMatcher: Mode::JME needs jtpt, genpt and sigmaJER");
+        "JetMapper: Mode::JME needs jtpt, genpt and sigmaJER");
   }
   if (mode == Mode::Nearest || mode == Mode::JME) {
     for (int i = 0; i < nref; i++) {
@@ -108,6 +128,6 @@ std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
   return match;
 }
 
-} // namespace JetMatcher
+} // namespace JetMapper
 
 #endif

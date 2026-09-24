@@ -25,7 +25,7 @@
 //   Hybrid     : Scaling for a well-matched gen jet, else Stochastic (JME
 //                recommendation, SmearedJetProducerT)
 //   JME        : exactly JERSmear -- genPt taken as given (match first, e.g.
-//                JetMatcher::Mode::JME), Scaling if genPt >= 0, else Stochastic
+//                JetMapper::Mode::JME), Scaling if genPt >= 0, else Stochastic
 //   Scaling    : well-matched jets only, the rest are left unsmeared
 //   Stochastic : Gaussian smearing of every jet, gen match ignored (e.g.
 //                legacy analyses that smeared with a Gaussian only)
@@ -913,7 +913,7 @@ public:
   void SetMethod(JetSmearing::Method method) { method_ = method; }
   JetSmearing::Method GetMethod() const { return method_; }
 
-  // sigma_JER from the resolution file (e.g. for JetMatcher::Mode::JME)
+  // sigma_JER from the resolution file (e.g. for JetMapper::Mode::JME)
   double Resolution(double pt, double eta, double rho) const {
     return resolution_.getResolution(
         JetSmearerJME::JetParameters().setJetPt(pt).setJetEta(eta).setRho(rho));

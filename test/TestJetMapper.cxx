@@ -1,9 +1,9 @@
-// TestJetMatcher
+// TestJetMapper
+// pT order maps on hand-made arrays, ties, reordering, and random arrays;
 // reco to gen maps on hand-made jets: dR limit, phi wrap, nearest vs one to
-// one, and composing with JetSorter
+// one, JME mode, unmatched filler, and composing order + match maps
 
-#include "JetMatcher.h"
-#include "JetSorter.h"
+#include "JetMapper.h"
 
 #include <cmath>
 #include <cstdio>
@@ -23,8 +23,52 @@ static void Check(bool ok, const std::string &what) {
   }
 }
 
-using JetMatcher::Match;
-using JetMatcher::Mode;
+using JetMapper::Match;
+using JetMapper::Mode;
+static const int kU = JetMapper::kUnmatched;
+
+static void TestOrder() {
+  std::printf("order map\n");
+  const float pt[4] = {50, 80, 40, 30};
+  const float eta[4] = {0.1f, -1.2f, 2.0f, 0.5f};
+  std::vector<int> order = JetMapper::Order(4, pt);
+  Check(order == std::vector<int>({1, 0, 2, 3}), "{50,80,40,30} -> {1,0,2,3}");
+  Check(eta[order[0]] == -1.2f, "leading eta read through the map");
+
+  std::vector<float> etaSorted;
+  for (int j : order) {
+    etaSorted.push_back(eta[j]);
+  }
+  Check(etaSorted == std::vector<float>({-1.2f, 0.1f, 2.0f, 0.5f}),
+        "eta read in pT order through the map");
+
+  const double ties[4] = {10, 20, 20, 5};
+  Check(JetMapper::Order(4, ties) == std::vector<int>({1, 2, 0, 3}),
+        "equal pT keep their original order (double input)");
+  Check(JetMapper::Order(0, pt).empty(), "no jets, empty map");
+}
+
+static void TestOrderRandom() {
+  std::printf("order, random arrays\n");
+  std::mt19937 rng(7);
+  std::uniform_real_distribution<float> u(0, 500);
+  bool ok = true;
+  for (int trial = 0; trial < 1000; trial++) {
+    const int n = trial % 40;
+    std::vector<float> pt(n);
+    for (auto &p : pt) {
+      p = u(rng);
+    }
+    std::vector<int> order = JetMapper::Order(n, pt.data());
+    std::vector<bool> seen(n, false);
+    for (int i = 0; i < n; i++) {
+      ok = ok && order[i] >= 0 && order[i] < n && !seen[order[i]];
+      seen[order[i]] = true;
+      ok = ok && (i == 0 || pt[order[i - 1]] >= pt[order[i]]);
+    }
+  }
+  Check(ok, "1000 random arrays: permutation, pT descending");
+}
 
 static void TestBasic() {
   std::printf("basic matching\n");
@@ -33,14 +77,15 @@ static void TestBasic() {
   const float geneta[2] = {1.05f, 0.1f};
   const float genphi[2] = {1.0f, 0.0f};
   std::vector<int> m = Match(3, jteta, jtphi, 2, geneta, genphi, 0.4);
-  Check(m == std::vector<int>({1, 0, -1}), "{1, 0, -1}: R = 0.4, within R/2");
-  Check(std::fabs(JetMatcher::DeltaR(0, 0, 0.1, 0) - 0.1) < 1e-9, "DeltaR");
+  Check(m == std::vector<int>({1, 0, kU}),
+        "{1, 0, unmatched}: R = 0.4, within R/2");
+  Check(std::fabs(JetMapper::DeltaR(0, 0, 0.1, 0) - 0.1) < 1e-9, "DeltaR");
   Check(Match(3, jteta, jtphi, 2, geneta, genphi, 0.08) ==
-            std::vector<int>({-1, -1, -1}),
+            std::vector<int>({kU, kU, kU}),
         "R = 0.08: nothing within 0.04");
   Check(Match(1, jteta, jtphi, 0, geneta, genphi, 0.4) ==
-            std::vector<int>({-1}),
-        "no gen jets, all -1");
+            std::vector<int>({kU}),
+        "no gen jets, all unmatched");
 }
 
 static void TestPhiWrap() {
@@ -49,7 +94,7 @@ static void TestPhiWrap() {
   const double jtphi[1] = {3.1};
   const double geneta[1] = {0.5};
   const double genphi[1] = {-3.1};
-  Check(std::fabs(JetMatcher::DeltaR(0.5, 3.1, 0.5, -3.1) - (2 * M_PI - 6.2)) <
+  Check(std::fabs(JetMapper::DeltaR(0.5, 3.1, 0.5, -3.1) - (2 * M_PI - 6.2)) <
             1e-9,
         "dphi across +-pi");
   Check(Match(1, jteta, jtphi, 1, geneta, genphi, 0.4) == std::vector<int>({0}),
@@ -68,7 +113,7 @@ static void TestModes() {
             std::vector<int>({0, 0}),
         "nearest: both reco jets take gen 0");
   Check(Match(2, jteta, jtphi, 2, geneta, genphi, 0.4) ==
-            std::vector<int>({-1, 0}),
+            std::vector<int>({kU, 0}),
         "one to one (default): gen 0 to the closer reco 1, reco 0 has nothing "
         "else "
         "in 0.2");
@@ -78,17 +123,17 @@ static void TestModes() {
 }
 
 static void TestCompose() {
-  std::printf("with JetSorter\n");
+  std::printf("order + match maps\n");
   const float jtpt[3] = {40, 90, 60};
   const float jteta[3] = {0.0f, 1.0f, -1.0f};
   const float jtphi[3] = {0.0f, 1.0f, -1.0f};
   const float genpt[2] = {85, 38};
   const float geneta[2] = {1.02f, 0.01f};
   const float genphi[2] = {1.01f, 0.02f};
-  std::vector<int> order = JetSorter::Order(3, jtpt);
+  std::vector<int> order = JetMapper::Order(3, jtpt);
   std::vector<int> match = Match(3, jteta, jtphi, 2, geneta, genphi, 0.4);
   Check(genpt[match[order[0]]] == 85, "leading reco jet's gen pT");
-  Check(match[order[1]] == -1, "subleading reco jet unmatched");
+  Check(match[order[1]] == kU, "subleading reco jet unmatched");
   Check(genpt[match[order[2]]] == 38, "third reco jet's gen pT");
 }
 
@@ -111,8 +156,8 @@ static void TestJME() {
         "JME skips gen 0 (outside 3 sigma), takes gen 1");
   const float lowpt[2] = {60, 50};
   Check(Match(1, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::JME, 0.5, jtpt,
-              lowpt, sigma) == std::vector<int>({-1}),
-        "JME: nothing inside the window, -1");
+              lowpt, sigma) == std::vector<int>({kU}),
+        "JME: nothing inside the window, unmatched");
   bool threw = false;
   try {
     Match(1, jteta, jtphi, 2, geneta, genphi, 0.4, Mode::JME);
@@ -160,8 +205,8 @@ static void TestOneToOne() {
     for (int i = 0; i < nref; i++) {
       if (m[i] >= 0) {
         unique = unique && ++uses[m[i]] == 1;
-        inCone = inCone && JetMatcher::DeltaR(reta[i], rphi[i], geta[m[i]],
-                                              gphi[m[i]]) < 0.2;
+        inCone = inCone && JetMapper::DeltaR(reta[i], rphi[i], geta[m[i]],
+                                             gphi[m[i]]) < 0.2;
       }
       if (nearest[i] >= 0 && ++usesNearest[nearest[i]] == 2) {
         nShared++;
@@ -174,6 +219,8 @@ static void TestOneToOne() {
 }
 
 int main() {
+  TestOrder();
+  TestOrderRandom();
   TestBasic();
   TestPhiWrap();
   TestModes();
