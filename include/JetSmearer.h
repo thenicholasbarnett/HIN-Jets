@@ -1,8 +1,9 @@
 #ifndef JETSMEARER_H
 #define JETSMEARER_H
 
-// JetSmearer v2.0
-// smear the width of jet energy responses with just this header
+// JetSmearer v3.0
+// smear the width of jet energy responses with just this header, plus the
+// reco to gen matching it needs and pT ordering
 // Author: Nicholas Shawn Barnett
 
 // USAGE
@@ -25,7 +26,8 @@
 //   Hybrid     : Scaling for a well-matched gen jet, else Stochastic (JME
 //                recommendation, SmearedJetProducerT)
 //   JME        : exactly JERSmear -- genPt taken as given (match first, e.g.
-//                JetMapper::Mode::JME), Scaling if genPt >= 0, else Stochastic
+//                smearer.Match(..., Mode::JME)), Scaling if genPt >= 0, else
+//                Stochastic
 //   Scaling    : well-matched jets only, the rest are left unsmeared
 //   Stochastic : Gaussian smearing of every jet, gen match ignored (e.g.
 //                legacy analyses that smeared with a Gaussian only)
@@ -33,6 +35,31 @@
 //
 //   JetSmearer gaus("Resolution_AK4PFchs.txt", "ScaleFactor_AK4PFchs.txt",
 //                   JetSmearing::Method::Stochastic);
+//
+// Matching: smearer.Match(...) returns an nref-long index array, reco to gen
+// -- match[i] is the gen jet matched to reco jet i, or
+// JetSmearing::kUnmatched (-999, as the forest's refpt) for none. Check it
+// before indexing, genpt[-999] is out of bounds. Mode, default OneToOne:
+//   OneToOne : closest pairs first, no jet matched twice, dR < dRFraction R
+//   Nearest  : each reco jet takes its closest gen jet (can be shared)
+//   JME      : JER twiki / SmearedJetProducerT rule, fixed -- closest gen jet
+//              with dR < R/2 and |pT - pT_gen| < 3 sigma_JER pT, sigma_JER
+//              looked up here (jtpt JEC-corrected)
+//
+//   std::vector<int> match = smearer.Match(nref, ptCorr, jteta, jtphi, ngen,
+//                                          genpt, geneta, genphi, 0.4, rho,
+//                                          JetSmearing::Mode::JME);
+//   double genPt = match[i] >= 0 ? genpt[match[i]] : -1;
+//
+// OneToOne/Nearest need no files: JetSmearing::Match(nref, jteta, jtphi,
+// ngen, geneta, genphi, 0.4, mode, dRFraction); the forest's ref* matching
+// is OneToOne with dRFraction 1.0
+//
+// Ordering: JetSmearing::Order(n, pt), n-long, highest pT first -- order[i]
+// is the original index of the i-th hardest jet; sort after smearing
+//
+//   std::vector<int> order = JetSmearing::Order(nref, ptSmeared);
+//   int g = match[order[0]]; // leading jet's gen jet
 
 #include <algorithm>
 #include <atomic>
@@ -44,6 +71,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -87,7 +115,11 @@ inline std::vector<std::string> getTokens(const std::string &fLine) {
 }
 } // namespace jer_detail
 
+// shared with JetCorrector.h
+#ifndef JET_VARIATION_ENUM
+#define JET_VARIATION_ENUM
 enum class Variation { NOMINAL = 0, DOWN = 1, UP = 2 };
+#endif
 
 template <typename T> T clip(const T &n, const T &lower, const T &upper) {
   return std::max(lower, std::min(n, upper));
@@ -900,6 +932,108 @@ inline double SmearedPt(double recoPt, double smearFactor) {
   return recoPt * smearFactor;
 }
 
+// pT order and reco to gen matching of forest-style jet arrays
+
+// unmatched entry of a match map, same filler as the forest's refpt
+constexpr int kUnmatched = -999;
+
+enum class Mode { OneToOne, Nearest, JME };
+
+// JME's matching rule (JER twiki, SmearedJetProducerT), fixed
+constexpr double kJMEdRFraction = 0.5; // dR < R/2
+constexpr double kJMENSigma = 3.0;     // |pT - pT_gen| < 3 sigma_JER pT
+
+// equal pT keep their original order
+template <typename T> std::vector<int> Order(int n, const T *pt) {
+  std::vector<int> order(n);
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(),
+                   [&](int a, int b) { return pt[a] > pt[b]; });
+  return order;
+}
+
+inline double DeltaR(double eta1, double phi1, double eta2, double phi2) {
+  const double dphi = std::remainder(phi1 - phi2, 2 * M_PI);
+  const double deta = eta1 - eta2;
+  return std::sqrt(deta * deta + dphi * dphi);
+}
+
+namespace detail {
+
+// each reco jet takes its closest gen jet within maxDR, plus JME's pT window
+// when jtpt is given
+template <typename T>
+std::vector<int> MatchNearest(int nref, const T *jteta, const T *jtphi,
+                              int ngen, const T *geneta, const T *genphi,
+                              double maxDR, const T *jtpt = nullptr,
+                              const T *genpt = nullptr,
+                              const double *sigmaJER = nullptr) {
+  std::vector<int> match(nref, kUnmatched);
+  for (int i = 0; i < nref; i++) {
+    double best = maxDR;
+    for (int g = 0; g < ngen; g++) {
+      if (jtpt &&
+          std::abs(jtpt[i] - genpt[g]) >= kJMENSigma * sigmaJER[i] * jtpt[i]) {
+        continue;
+      }
+      const double dr = DeltaR(jteta[i], jtphi[i], geneta[g], genphi[g]);
+      if (dr < best) {
+        best = dr;
+        match[i] = g;
+      }
+    }
+  }
+  return match;
+}
+
+// every pair within maxDR, smallest dR first, no jet used twice
+template <typename T>
+std::vector<int> MatchOneToOne(int nref, const T *jteta, const T *jtphi,
+                               int ngen, const T *geneta, const T *genphi,
+                               double maxDR) {
+  std::vector<int> match(nref, kUnmatched);
+  std::vector<std::tuple<double, int, int>> pairs;
+  for (int i = 0; i < nref; i++) {
+    for (int g = 0; g < ngen; g++) {
+      const double dr = DeltaR(jteta[i], jtphi[i], geneta[g], genphi[g]);
+      if (dr < maxDR) {
+        pairs.emplace_back(dr, i, g);
+      }
+    }
+  }
+  std::sort(pairs.begin(), pairs.end());
+  std::vector<bool> genUsed(ngen, false);
+  for (const auto &p : pairs) {
+    const int i = std::get<1>(p);
+    const int g = std::get<2>(p);
+    if (match[i] < 0 && !genUsed[g]) {
+      match[i] = g;
+      genUsed[g] = true;
+    }
+  }
+  return match;
+}
+
+} // namespace detail
+
+// OneToOne / Nearest, no files needed; JME needs sigma_JER, use
+// JetSmearer::Match
+template <typename T>
+std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
+                       const T *geneta, const T *genphi, double coneR,
+                       Mode mode = Mode::OneToOne, double dRFraction = 0.5) {
+  if (mode == Mode::JME) {
+    throw std::invalid_argument("JetSmearing::Match: Mode::JME needs "
+                                "sigma_JER, use JetSmearer::Match");
+  }
+  if (mode == Mode::Nearest) {
+    return detail::MatchNearest(nref, jteta, jtphi, ngen, geneta, genphi,
+                                dRFraction * coneR);
+  }
+  return detail::MatchOneToOne(nref, jteta, jtphi, ngen, geneta, genphi,
+                               dRFraction * coneR);
+}
+
 } // namespace JetSmearing
 
 class JetSmearer {
@@ -913,7 +1047,7 @@ public:
   void SetMethod(JetSmearing::Method method) { method_ = method; }
   JetSmearing::Method GetMethod() const { return method_; }
 
-  // sigma_JER from the resolution file (e.g. for JetMapper::Mode::JME)
+  // sigma_JER from the resolution file
   double Resolution(double pt, double eta, double rho) const {
     return resolution_.getResolution(
         JetSmearerJME::JetParameters().setJetPt(pt).setJetEta(eta).setRho(rho));
@@ -941,6 +1075,28 @@ public:
     JetSmearing::Result r = Smear(recoPt, eta, rho, genPt, eventID, variation,
                                   uncertaintySource, dPtMaxFactor);
     return JetSmearing::SmearedPt(recoPt, r.smearFactor);
+  }
+
+  // reco to gen match, nref-long, JetSmearing::kUnmatched for none; jtpt
+  // JEC-corrected, rho for sigma_JER (JME mode); dRFraction for OneToOne
+  // and Nearest only, JME is always R/2 and 3 sigma_JER
+  template <typename T>
+  std::vector<int>
+  Match(int nref, const T *jtpt, const T *jteta, const T *jtphi, int ngen,
+        const T *genpt, const T *geneta, const T *genphi, double coneR,
+        double rho, JetSmearing::Mode mode = JetSmearing::Mode::OneToOne,
+        double dRFraction = 0.5) const {
+    if (mode != JetSmearing::Mode::JME) {
+      return JetSmearing::Match(nref, jteta, jtphi, ngen, geneta, genphi, coneR,
+                                mode, dRFraction);
+    }
+    std::vector<double> sigma(nref);
+    for (int i = 0; i < nref; i++) {
+      sigma[i] = Resolution(jtpt[i], jteta[i], rho);
+    }
+    return JetSmearing::detail::MatchNearest(
+        nref, jteta, jtphi, ngen, geneta, genphi,
+        JetSmearing::kJMEdRFraction * coneR, jtpt, genpt, sigma.data());
   }
 
 private:
