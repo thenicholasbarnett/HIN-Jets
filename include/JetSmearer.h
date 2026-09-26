@@ -1,7 +1,7 @@
 #ifndef JETSMEARER_H
 #define JETSMEARER_H
 
-// JetSmearer v3.0
+// JetSmearer v2.1
 // smear the width of jet energy responses with just this header, plus the
 // reco to gen matching it needs and pT ordering
 // Author: Nicholas Shawn Barnett
