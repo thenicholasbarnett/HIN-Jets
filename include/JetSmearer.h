@@ -1,7 +1,7 @@
 #ifndef JETSMEARER_H
 #define JETSMEARER_H
 
-// JetSmearer v2.1
+// JetSmearer v2.2
 // smear the width of jet energy responses with just this header, plus the
 // reco to gen matching it needs and pT ordering
 // Author: Nicholas Shawn Barnett
@@ -15,6 +15,17 @@
 //   JetSmearer smearer("Resolution_AK4PFchs.txt", "ScaleFactor_AK4PFchs.txt");
 //   double smearedPt =
 //       smearer.SmearedPt(jet.pt, jet.eta, event.rho, genPt, event.evt);
+//
+// or with setters, like JetCorrector (every input must be set once before the
+// first Get..., each keeps its value until set again):
+//
+//   smearer.SetJetPT(jet.pt);
+//   smearer.SetJetEta(jet.eta);
+//   smearer.SetRho(event.rho);
+//   smearer.SetGenPT(genPt);
+//   smearer.SetEventID(event.evt);
+//   double smearedPt = smearer.GetSmearedPT(); // or
+//   GetSmearedPT(Variation::UP)
 //
 // Smearing and random numbers follow JME's correctionlib JERSmear
 // (jer_smear.json): scaling 1 + (SF - 1)(pT - pT_gen)/pT, stochastic
@@ -1077,6 +1088,38 @@ public:
     return JetSmearing::SmearedPt(recoPt, r.smearFactor);
   }
 
+  // setter style, like JetCorrector: the jet is held by the object, the
+  // Get... methods use it. Throw if an input was never set
+  void SetJetPT(double value) { setPt_ = value; }
+  void SetJetEta(double value) { setEta_ = value; }
+  void SetRho(double value) { setRho_ = value; }
+  void SetGenPT(double value) { setGenPt_ = value; }
+  void SetEventID(std::int64_t value) {
+    setEventID_ = value;
+    hasEventID_ = true;
+  }
+
+  JetSmearing::Result GetSmear(Variation variation = Variation::NOMINAL,
+                               const std::string &uncertaintySource = "",
+                               double dPtMaxFactor = 3.0) const {
+    CheckSet(true);
+    return Smear(setPt_, setEta_, setRho_, setGenPt_, setEventID_, variation,
+                 uncertaintySource, dPtMaxFactor);
+  }
+
+  double GetSmearedPT(Variation variation = Variation::NOMINAL,
+                      const std::string &uncertaintySource = "",
+                      double dPtMaxFactor = 3.0) const {
+    CheckSet(true);
+    return SmearedPt(setPt_, setEta_, setRho_, setGenPt_, setEventID_,
+                     variation, uncertaintySource, dPtMaxFactor);
+  }
+
+  double GetResolution() const {
+    CheckSet(false);
+    return Resolution(setPt_, setEta_, setRho_);
+  }
+
   // reco to gen match, nref-long, JetSmearing::kUnmatched for none; jtpt
   // JEC-corrected, rho for sigma_JER (JME mode); dRFraction for OneToOne
   // and Nearest only, JME is always R/2 and 3 sigma_JER
@@ -1103,6 +1146,25 @@ private:
   JetSmearerJME::JetResolution resolution_;
   JetSmearerJME::JetResolutionScaleFactor scaleFactor_;
   JetSmearing::Method method_;
+
+  // setter-style inputs, NaN / false until set
+  double setPt_ = std::nan("");
+  double setEta_ = std::nan("");
+  double setRho_ = std::nan("");
+  double setGenPt_ = std::nan("");
+  std::int64_t setEventID_ = 0;
+  bool hasEventID_ = false;
+
+  void CheckSet(bool smearing) const {
+    if (std::isnan(setPt_) || std::isnan(setEta_) || std::isnan(setRho_) ||
+        (smearing && (std::isnan(setGenPt_) || !hasEventID_))) {
+      throw std::logic_error(
+          smearing ? "JetSmearer: SetJetPT, SetJetEta, SetRho, SetGenPT and "
+                     "SetEventID before GetSmear / GetSmearedPT"
+                   : "JetSmearer: SetJetPT, SetJetEta and SetRho before "
+                     "GetResolution");
+    }
+  }
 };
 
 #endif

@@ -490,6 +490,48 @@ static void TestMatchJME() {
   Check(threw, "JetSmearing::Match (no files) with Mode::JME throws");
 }
 
+// setter style gives exactly the argument style; unset inputs throw
+static void TestSetters() {
+  std::printf("setter style\n");
+  JetSmearer smearer(ResolutionFile(), ScaleFactorFile());
+  bool threw = false;
+  try {
+    smearer.GetSmearedPT();
+  } catch (const std::logic_error &) {
+    threw = true;
+  }
+  Check(threw, "GetSmearedPT before any setter throws");
+  smearer.SetJetPT(100.0);
+  smearer.SetJetEta(0.5);
+  smearer.SetRho(2.0);
+  Check(smearer.GetResolution() == smearer.Resolution(100.0, 0.5, 2.0),
+        "GetResolution needs only pT, eta, rho");
+  threw = false;
+  try {
+    smearer.GetSmear();
+  } catch (const std::logic_error &) {
+    threw = true;
+  }
+  Check(threw, "GetSmear without SetGenPT / SetEventID throws");
+  smearer.SetEventID(12345);
+  for (double genPt : {-1.0, 95.0}) {
+    smearer.SetGenPT(genPt);
+    for (Variation v : {Variation::NOMINAL, Variation::DOWN, Variation::UP}) {
+      Check(smearer.GetSmearedPT(v) ==
+                smearer.SmearedPt(100.0, 0.5, 2.0, genPt, 12345, v),
+            "GetSmearedPT == SmearedPt, genPt " + std::to_string(genPt) +
+                ", variation " + std::to_string((int)v));
+    }
+    Check(smearer.GetSmear().smearFactor ==
+              smearer.Smear(100.0, 0.5, 2.0, genPt, 12345).smearFactor,
+          "GetSmear == Smear, genPt " + std::to_string(genPt));
+  }
+  smearer.SetJetPT(200.0); // the rest keep their values
+  Check(smearer.GetSmearedPT() ==
+            smearer.SmearedPt(200.0, 0.5, 2.0, 95.0, 12345),
+        "inputs not set again keep their value");
+}
+
 int main() {
   if (!std::getenv("TEST_TMPDIR")) {
     std::printf("TEST_TMPDIR not set, run through test/run_tests.sh\n");
@@ -510,6 +552,7 @@ int main() {
   TestMatchCompose();
   TestMatchOneToOne();
   TestMatchJME();
+  TestSetters();
   std::printf("%d/%d checks passed\n", nCheck - nFail, nCheck);
   return nFail == 0 ? 0 : 1;
 }
