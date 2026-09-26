@@ -11,6 +11,8 @@
 // v4.0: JetUncertainty (v1.0, Yi Chen) merged in, and JES variations:
 //       GetCorrectedPT(Variation::UP / DOWN) = corrected pT * (1 +- JEU),
 //       GetUncertainty() = {down, up} fractions at the corrected pT
+// v4.1: CorrectedPt(...) / Uncertainty(...) take the jet as arguments instead
+//       of setters, like JetSmearer and JetSelector
 
 #include <iostream>
 #include <fstream>
@@ -334,6 +336,10 @@ public:
    double GetCorrectedPT();
    double GetCorrectedPT(Variation V);
    std::pair<double, double> GetUncertainty();
+   double CorrectedPt(double RawPT, double Eta, double Phi, double Rho, double Area,
+                      Variation V = Variation::NOMINAL);
+   std::pair<double, double> Uncertainty(double RawPT, double Eta, double Phi, double Rho,
+                                         double Area);
 };
 
 void JetCorrector::Initialize(std::vector<std::string> Files)
@@ -389,6 +395,29 @@ std::pair<double, double> JetCorrector::GetUncertainty()
    JEU.SetJetArea(JetArea);
    JEU.SetRho(Rho);
    return JEU.GetUncertainty();
+}
+
+// argument style: the jet in one call, no setters (sets them, then as above)
+double JetCorrector::CorrectedPt(double RawPT, double Eta, double Phi, double Rho, double Area,
+                                 Variation V)
+{
+   SetJetPT(RawPT);
+   SetJetEta(Eta);
+   SetJetPhi(Phi);
+   SetRho(Rho);
+   SetJetArea(Area);
+   return GetCorrectedPT(V);
+}
+
+std::pair<double, double> JetCorrector::Uncertainty(double RawPT, double Eta, double Phi,
+                                                    double Rho, double Area)
+{
+   SetJetPT(RawPT);
+   SetJetEta(Eta);
+   SetJetPhi(Phi);
+   SetRho(Rho);
+   SetJetArea(Area);
+   return GetUncertainty();
 }
 
 // JES variation: corrected pT * (1 + up) or (1 - down); -1 where the

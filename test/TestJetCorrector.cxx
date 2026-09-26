@@ -90,6 +90,8 @@ static void TestChain() {
   double afterL2 = afterL1 * (1.1 + 0.01 * std::log10(afterL1));
   Near(jec.GetCorrectedPT(), afterL2, "L1 then L2");
   Near(jec.GetCorrection(), afterL2 / 50.0, "total correction factor");
+  Near(jec.CorrectedPt(50.0, 0.5, 0.0, 3.0, 0.5), afterL2,
+       "L1 then L2, argument style (rho, area)");
 }
 
 // rows: eta range, count, then (pT, down, up) triplets
@@ -141,6 +143,18 @@ static void TestVariations() {
         "GetUncertainty {down, up} = {0.05, 0.06}");
   const double sNom = 104.5; // e.g. a smeared pT
   Near(sNom * (1 + u.second), 104.5 * 1.06, "JES up on a smeared pT");
+  // argument style gives the same as the setters
+  Near(jec.CorrectedPt(100.0, 0.5, 0.0, 0.0, 0.0), 110.0,
+       "CorrectedPt nominal");
+  Near(jec.CorrectedPt(100.0, 0.5, 0.0, 0.0, 0.0, Variation::UP), 110.0 * 1.06,
+       "CorrectedPt UP");
+  Near(jec.CorrectedPt(100.0, 0.5, 0.0, 0.0, 0.0, Variation::DOWN),
+       110.0 * 0.95, "CorrectedPt DOWN");
+  Check(jec.Uncertainty(100.0, 0.5, 0.0, 0.0, 0.0) ==
+            std::make_pair(0.05, 0.06),
+        "Uncertainty {down, up}");
+  Near(jec.CorrectedPt(100.0, 4.0, 0.0, 0.0, 0.0, Variation::UP), -1.0,
+       "CorrectedPt UP -1 outside the uncertainty eta");
   jec.SetJetEta(4.0);
   Near(jec.GetCorrectedPT(), 110.0, "nominal outside the uncertainty eta");
   Near(jec.GetCorrectedPT(Variation::UP), -1.0,
