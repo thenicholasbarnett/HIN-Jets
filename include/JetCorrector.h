@@ -10,9 +10,14 @@
 // v3.0: one can add list of text files to apply them one by one
 // v4.0: JetUncertainty (v1.0, Yi Chen) merged in, and JES variations:
 //       GetCorrectedPT(Variation::UP / DOWN) = corrected pT * (1 +- JEU),
-//       GetUncertainty() = {down, up} fractions at the corrected pT
-// v4.1: CorrectedPt(...) / Uncertainty(...) take the jet as arguments instead
-//       of setters, like JetSmearer and JetSelector
+//       GetUncertainty() = {down, up} fractions at the corrected pT, read in
+//       CMSSW's (pT, up, down) order. CorrectedPt(...) / Uncertainty(...) take
+//       the jet as arguments instead of setters, like JetSmearer and
+//       JetSelector; phi, rho and area can be left out, which throws if a
+//       loaded file needs them (rho and area: L1FastJet). Correct(...) /
+//       GetCorrect() give the details, JetCorrecting::Result: pT and factor
+//       after each level, total factor, JES uncertainty; Result::Print()
+//       writes them out
 
 #include <iostream>
 #include <fstream>
@@ -22,6 +27,8 @@
 #include "TF1.h"
 #include "TF2.h"
 #include "TF3.h"
+#include <cmath>
+#include <cstdio>
 #include <stdexcept>
 #include <utility>
 
@@ -30,6 +37,32 @@
 #define JET_VARIATION_ENUM
 enum class Variation { NOMINAL = 0, DOWN = 1, UP = 2 };
 #endif
+
+// correction details of one jet, from JetCorrector::Correct / GetCorrect
+namespace JetCorrecting
+{
+   struct Result
+   {
+      double rawPt = -1;
+      double correctedPt = -1;         // after every level, -1 if a level has no entry
+      double factor = -1;              // correctedPt / rawPt
+      std::vector<double> levelPt;     // pT after each file, in the order applied
+      std::vector<double> levelFactor; // each file's factor, on the pT before it
+      double uncDown = -1, uncUp = -1; // JES fractions at correctedPt, -1 without uncertainty file
+
+      void Print() const
+      {
+         printf("rawPt        %.4f\n", rawPt);
+         for(int i = 0; i < (int)levelPt.size(); i++)
+            printf("level %d      pT %.4f   factor %.6f\n", i, levelPt[i], levelFactor[i]);
+         printf("correctedPt  %.4f   factor %.6f\n", correctedPt, factor);
+         if(uncDown < 0 && uncUp < 0)
+            printf("JES unc.     none (no uncertainty file, or no entry)\n");
+         else
+            printf("JES unc.     down %.4f   up %.4f\n", uncDown, uncUp);
+      }
+   };
+}
 
 // JetUncertainty
 // v1.0
@@ -318,6 +351,12 @@ private:
    double JetPT, JetEta, JetPhi, JetArea, Rho;
    JetUncertainty JEU;
    bool HasUncertainty = false;
+   // which inputs the loaded files use, found once by evaluating them
+   int ProbedLevels = -1;
+   const SingleJetCorrector *ProbedFirst = nullptr;
+   bool NeedsPhi = false, NeedsRhoArea = false;
+   void ProbeInputs();
+   void SetInputs(double RawPT, double Eta, double Phi, double Rho, double Area);
 public:
    JetCorrector()                               {}
    JetCorrector(std::string File)               { Initialize(File); }
@@ -336,10 +375,19 @@ public:
    double GetCorrectedPT();
    double GetCorrectedPT(Variation V);
    std::pair<double, double> GetUncertainty();
-   double CorrectedPt(double RawPT, double Eta, double Phi, double Rho, double Area,
+   // phi, rho, area optional: throw if a loaded file needs one left out
+   double CorrectedPt(double RawPT, double Eta, double Phi = std::nan(""),
+                      double Rho = std::nan(""), double Area = std::nan(""),
                       Variation V = Variation::NOMINAL);
-   std::pair<double, double> Uncertainty(double RawPT, double Eta, double Phi, double Rho,
-                                         double Area);
+   double CorrectedPt(double RawPT, double Eta, Variation V)
+                                                { return CorrectedPt(RawPT, Eta, std::nan(""), std::nan(""), std::nan(""), V); }
+   double CorrectedPt(double RawPT, double Eta, double Phi, Variation V)
+                                                { return CorrectedPt(RawPT, Eta, Phi, std::nan(""), std::nan(""), V); }
+   std::pair<double, double> Uncertainty(double RawPT, double Eta, double Phi = std::nan(""),
+                                         double Rho = std::nan(""), double Area = std::nan(""));
+   JetCorrecting::Result GetCorrect();
+   JetCorrecting::Result Correct(double RawPT, double Eta, double Phi = std::nan(""),
+                                 double Rho = std::nan(""), double Area = std::nan(""));
 };
 
 void JetCorrector::Initialize(std::vector<std::string> Files)
@@ -394,30 +442,121 @@ std::pair<double, double> JetCorrector::GetUncertainty()
    JEU.SetJetPhi(JetPhi);
    JEU.SetJetArea(JetArea);
    JEU.SetRho(Rho);
-   return JEU.GetUncertainty();
+   std::pair<double, double> U = JEU.GetUncertainty();
+   // CMSSW convention: files are (pT, up, down), JetUncertainty reads them as (pT, down, up)
+   return std::pair<double, double>(U.second, U.first);
+}
+
+// which inputs the loaded levels depend on: each level evaluated at a fixed jet
+// with phi, rho, area varied; redone when the chain changes
+void JetCorrector::ProbeInputs()
+{
+   const SingleJetCorrector *First = JEC.empty() ? nullptr : &JEC[0];
+   if(ProbedLevels == (int)JEC.size() && ProbedFirst == First)
+      return;
+   ProbedLevels = JEC.size();
+   ProbedFirst = First;
+   NeedsPhi = false;
+   NeedsRhoArea = false;
+
+   for(int i = 0; i < (int)JEC.size(); i++)
+   {
+      for(double Eta : {0.5, 2.0, 3.5})
+      {
+         auto C = [&](double Phi, double Rho, double Area)
+         {
+            JEC[i].SetJetPT(100);
+            JEC[i].SetJetEta(Eta);
+            JEC[i].SetJetPhi(Phi);
+            JEC[i].SetRho(Rho);
+            JEC[i].SetJetArea(Area);
+            return JEC[i].GetCorrection();
+         };
+         double Base = C(0, 0, 0.5);
+         if(C(1.5, 0, 0.5) != Base || C(-2.5, 0, 0.5) != Base)
+            NeedsPhi = true;
+         if(C(0, 20, 0.5) != Base || C(0, 0, 1.0) != Base)
+            NeedsRhoArea = true;
+      }
+   }
+}
+
+// argument style inputs: left-out phi, rho, area (NaN) become 0, unless a
+// loaded file uses them
+void JetCorrector::SetInputs(double RawPT, double Eta, double Phi, double Rho, double Area)
+{
+   bool NoPhi = std::isnan(Phi);
+   bool NoRhoArea = std::isnan(Rho) || std::isnan(Area);
+   if(NoPhi || NoRhoArea)
+   {
+      ProbeInputs();
+      if(NoRhoArea && NeedsRhoArea)
+         throw std::runtime_error("JetCorrector: a loaded file (L1FastJet) uses rho and jet area, pass both");
+      if(NoPhi && NeedsPhi)
+         throw std::runtime_error("JetCorrector: a loaded file uses jet phi, pass it");
+   }
+   SetJetPT(RawPT);
+   SetJetEta(Eta);
+   SetJetPhi(NoPhi ? 0 : Phi);
+   SetRho(std::isnan(Rho) ? 0 : Rho);
+   SetJetArea(std::isnan(Area) ? 0 : Area);
 }
 
 // argument style: the jet in one call, no setters (sets them, then as above)
 double JetCorrector::CorrectedPt(double RawPT, double Eta, double Phi, double Rho, double Area,
                                  Variation V)
 {
-   SetJetPT(RawPT);
-   SetJetEta(Eta);
-   SetJetPhi(Phi);
-   SetRho(Rho);
-   SetJetArea(Area);
+   SetInputs(RawPT, Eta, Phi, Rho, Area);
    return GetCorrectedPT(V);
 }
 
 std::pair<double, double> JetCorrector::Uncertainty(double RawPT, double Eta, double Phi,
                                                     double Rho, double Area)
 {
-   SetJetPT(RawPT);
-   SetJetEta(Eta);
-   SetJetPhi(Phi);
-   SetRho(Rho);
-   SetJetArea(Area);
+   SetInputs(RawPT, Eta, Phi, Rho, Area);
    return GetUncertainty();
+}
+
+// details of the jet held: the chain of GetCorrectedPT(), level by level
+JetCorrecting::Result JetCorrector::GetCorrect()
+{
+   JetCorrecting::Result R;
+   R.rawPt = JetPT;
+
+   double PT = JetPT;
+   for(int i = 0; i < (int)JEC.size(); i++)
+   {
+      JEC[i].SetJetPT(PT);
+      JEC[i].SetJetEta(JetEta);
+      JEC[i].SetJetPhi(JetPhi);
+      JEC[i].SetRho(Rho);
+      JEC[i].SetJetArea(JetArea);
+
+      double Before = PT;
+      PT = JEC[i].GetCorrectedPT();
+      R.levelPt.push_back(PT);
+      R.levelFactor.push_back(PT < 0 ? -1 : PT / Before);
+
+      if(PT < 0)
+         break;
+   }
+
+   R.correctedPt = PT;
+   R.factor = (PT < 0) ? -1 : PT / JetPT;
+   if(HasUncertainty == true && PT >= 0)
+   {
+      std::pair<double, double> U = GetUncertainty();
+      R.uncDown = U.first;
+      R.uncUp = U.second;
+   }
+   return R;
+}
+
+JetCorrecting::Result JetCorrector::Correct(double RawPT, double Eta, double Phi, double Rho,
+                                            double Area)
+{
+   SetInputs(RawPT, Eta, Phi, Rho, Area);
+   return GetCorrect();
 }
 
 // JES variation: corrected pT * (1 + up) or (1 - down); -1 where the

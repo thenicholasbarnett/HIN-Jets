@@ -90,8 +90,39 @@ static void TestChain() {
   double afterL2 = afterL1 * (1.1 + 0.01 * std::log10(afterL1));
   Near(jec.GetCorrectedPT(), afterL2, "L1 then L2");
   Near(jec.GetCorrection(), afterL2 / 50.0, "total correction factor");
+
+  // details, level by level
+  JetCorrecting::Result r = jec.Correct(50.0, 0.5, 0.0, 3.0, 0.5);
+  Check(r.correctedPt == jec.GetCorrectedPT(),
+        "Correct().correctedPt == GetCorrectedPT(), bit for bit");
+  Check(r.levelPt.size() == 2 && r.levelFactor.size() == 2, "two levels");
+  Near(r.levelPt[0], afterL1, "level 1 pT (L1FastJet)");
+  Near(r.levelPt[1], afterL2, "level 2 pT (L2Relative)");
+  Near(r.levelFactor[0], afterL1 / 50.0, "L1 factor");
+  Near(r.levelFactor[1], afterL2 / afterL1, "L2 factor, on the L1 output");
+  Near(r.factor, r.levelFactor[0] * r.levelFactor[1],
+       "total factor = product of the levels");
+  Check(r.uncDown == -1 && r.uncUp == -1, "no uncertainty file: -1");
+  JetCorrecting::Result g = jec.GetCorrect(); // setters as left by Correct
+  Check(g.correctedPt == r.correctedPt && g.levelPt == r.levelPt,
+        "GetCorrect() after the setters == Correct()");
+  r.Print();
   Near(jec.CorrectedPt(50.0, 0.5, 0.0, 3.0, 0.5), afterL2,
        "L1 then L2, argument style (rho, area)");
+  bool threw = false;
+  try {
+    jec.CorrectedPt(50.0, 0.5);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  Check(threw, "L1FastJet loaded, rho and area left out: throws");
+  threw = false;
+  try {
+    jec.Correct(50.0, 0.5, 0.0);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  Check(threw, "L1FastJet loaded, Correct(pt, eta, phi): throws");
 }
 
 // rows: eta range, count, then (pT, down, up) triplets
@@ -135,23 +166,42 @@ static void TestVariations() {
   jec.SetJetPT(100.0);
   Near(jec.GetCorrectedPT(), 110.0, "nominal, unchanged method");
   Near(jec.GetCorrectedPT(Variation::NOMINAL), 110.0, "Variation::NOMINAL");
-  Near(jec.GetCorrectedPT(Variation::UP), 110.0 * 1.06, "UP = pT (1 + up)");
-  Near(jec.GetCorrectedPT(Variation::DOWN), 110.0 * 0.95,
+  Near(jec.GetCorrectedPT(Variation::UP), 110.0 * 1.05, "UP = pT (1 + up)");
+  Near(jec.GetCorrectedPT(Variation::DOWN), 110.0 * 0.94,
        "DOWN = pT (1 - down)");
   std::pair<double, double> u = jec.GetUncertainty();
-  Check(std::abs(u.first - 0.05) < 1e-9 && std::abs(u.second - 0.06) < 1e-9,
-        "GetUncertainty {down, up} = {0.05, 0.06}");
+  Check(std::abs(u.first - 0.06) < 1e-9 && std::abs(u.second - 0.05) < 1e-9,
+        "GetUncertainty {down, up} = {0.06, 0.05}: file is (pT, up, down)");
   const double sNom = 104.5; // e.g. a smeared pT
-  Near(sNom * (1 + u.second), 104.5 * 1.06, "JES up on a smeared pT");
+  Near(sNom * (1 + u.second), 104.5 * 1.05, "JES up on a smeared pT");
+  JetCorrecting::Result r = jec.Correct(100.0, 0.5, 0.0, 0.0, 0.0);
+  Near(r.correctedPt, 110.0, "Correct: corrected pT");
+  Check(r.uncDown == 0.06 && r.uncUp == 0.05, "Correct: JES {down, up}");
+  JetCorrecting::Result out = jec.Correct(100.0, 6.0, 0.0, 0.0, 0.0);
+  Check(out.correctedPt == -1 && out.factor == -1 && out.levelPt.size() == 1 &&
+            out.levelFactor[0] == -1,
+        "Correct outside every bin: -1, stops at the failing level");
+  // no L1: phi, rho, area optional, any value gives the same
+  Near(jec.CorrectedPt(100.0, 0.5), 110.0, "CorrectedPt(pt, eta)");
+  Near(jec.CorrectedPt(100.0, 0.5, 0.3), 110.0, "CorrectedPt(pt, eta, phi)");
+  Near(jec.CorrectedPt(100.0, 0.5, Variation::UP), 110.0 * 1.05,
+       "CorrectedPt(pt, eta, UP)");
+  Near(jec.CorrectedPt(100.0, 0.5, 0.3, Variation::DOWN), 110.0 * 0.94,
+       "CorrectedPt(pt, eta, phi, DOWN)");
+  Near(jec.CorrectedPt(100.0, 0.5, -2.0, 35.0, 0.9), 110.0,
+       "no L1: phi, rho, area don't matter");
+  Check(jec.Correct(100.0, 0.5, 0.3).uncUp == 0.05, "Correct(pt, eta, phi)");
+  Check(jec.Uncertainty(100.0, 0.5) == std::make_pair(0.06, 0.05),
+        "Uncertainty(pt, eta)");
   // argument style gives the same as the setters
   Near(jec.CorrectedPt(100.0, 0.5, 0.0, 0.0, 0.0), 110.0,
        "CorrectedPt nominal");
-  Near(jec.CorrectedPt(100.0, 0.5, 0.0, 0.0, 0.0, Variation::UP), 110.0 * 1.06,
+  Near(jec.CorrectedPt(100.0, 0.5, 0.0, 0.0, 0.0, Variation::UP), 110.0 * 1.05,
        "CorrectedPt UP");
   Near(jec.CorrectedPt(100.0, 0.5, 0.0, 0.0, 0.0, Variation::DOWN),
-       110.0 * 0.95, "CorrectedPt DOWN");
+       110.0 * 0.94, "CorrectedPt DOWN");
   Check(jec.Uncertainty(100.0, 0.5, 0.0, 0.0, 0.0) ==
-            std::make_pair(0.05, 0.06),
+            std::make_pair(0.06, 0.05),
         "Uncertainty {down, up}");
   Near(jec.CorrectedPt(100.0, 4.0, 0.0, 0.0, 0.0, Variation::UP), -1.0,
        "CorrectedPt UP -1 outside the uncertainty eta");
