@@ -1,81 +1,67 @@
 #ifndef JETSMEARER_H
 #define JETSMEARER_H
 
-// JetSmearer v2.2
-// smear the width of jet energy responses with just this header, plus the
-// reco to gen matching it needs and pT ordering
-// Author: Nicholas Shawn Barnett
+// JetSmearer v1.0
+// Smear the width of jet energy responses
+// Match two jet collections
+// Sort a jet collection by pT
+// Authored by Nicholas Shawn Barnett
 
 // USAGE
-// Instantiate JetSmearer per jet cone/collection
-// Construct with JetResolutionObject, CMS JERC txt file format
-// Call .SmearedPt(recoPt, eta, rho, genPt, eventID) per jet, genPt = -1 for
-// no gen match
+//
+// Instantiate JetSmearer object for each jet collection being smeared
 //
 //   JetSmearer smearer("Resolution_AK4PFchs.txt", "ScaleFactor_AK4PFchs.txt");
-//   double smearedPt =
-//       smearer.SmearedPt(jet.pt, jet.eta, event.rho, genPt, event.evt);
 //
-// or with setters, like JetCorrector (every input must be set once before the
-// first Get..., each keeps its value until set again):
+// Output smeared pT and up/down variations
+//
+//   double smearedPt = smearer.SmearedPt(jet.pt, jet.eta, event.rho, genPt, event.evt);
+//   double smearedPtUp = smearer.SmearedPt(jet.pt, jet.eta, event.rho, genPt, event.evt, Variation::UP);
+//   double smearedPtDown = smearer.SmearedPt(jet.pt, jet.eta, event.rho, genPt, event.evt, Variation::DOWN);
+//
+// or with setters and getters
 //
 //   smearer.SetJetPT(jet.pt);
 //   smearer.SetJetEta(jet.eta);
 //   smearer.SetRho(event.rho);
 //   smearer.SetGenPT(genPt);
 //   smearer.SetEventID(event.evt);
-//   double smearedPt = smearer.GetSmearedPT(); // or
-//   GetSmearedPT(Variation::UP)
+//   double smearedPt = smearer.GetSmearedPT();
+//   double smearedPtUp = smearer.GetSmearedPT(Variation::UP);
+//   double smearedPtDown = smearer.GetSmearedPT(Variation::DOWN);
 //
-// Smearing and random numbers follow JME's correctionlib JERSmear
-// (jer_smear.json): scaling 1 + (SF - 1)(pT - pT_gen)/pT, stochastic
-// 1 + sqrt(max(SF^2 - 1, 0)) sigma_JER N(0,1), with N seeded from a hash of
-// (pT, eta, rho, eventID) -- the same jet always gets the same smear, however
-// jobs are split. No pT floor.
+// Scaling: 1 + (SF - 1)(pT - pT_gen)/pT
+// Stochastic: 1 + sqrt(max(SF^2 - 1, 0)) sigma_JER N(0,1)
+// N seeded from a hash of (pT, eta, rho, eventID)
+// Hybrid: Scaling for matched jets within |pT - pT_gen| < 3 sigma_JER pT, else stochastic (Default & JME recommendation)
 //
-// Method (constructor argument or SetMethod), default Hybrid:
-//   Hybrid     : Scaling for a well-matched gen jet, else Stochastic (JME
-//                recommendation, SmearedJetProducerT)
-//   JME        : exactly JERSmear -- genPt taken as given (match first, e.g.
-//                smearer.Match(..., Mode::JME)), Scaling if genPt >= 0, else
-//                Stochastic
-//   Scaling    : well-matched jets only, the rest are left unsmeared
-//   Stochastic : Gaussian smearing of every jet, gen match ignored (e.g.
-//                legacy analyses that smeared with a Gaussian only)
-// "Well matched": genPt >= 0 and |recoPt - genPt| < 3 sigma_JER recoPt
+// smearer.Match returns array of indices with nref entries
+// each entry maps first-collection jet index to matched second-collection jet index 
+// entry is -999 when no match
 //
-//   JetSmearer gaus("Resolution_AK4PFchs.txt", "ScaleFactor_AK4PFchs.txt",
-//                   JetSmearing::Method::Stochastic);
+// Nearest: closest pair of jets, each jet can be shared
+// OneToOne: closest pairs first, no jet matched twice
+// JME: closest pair, dR < R/2, and |pT - pT_gen| < 3 sigma_JER pT
 //
-// Matching: smearer.Match(...) returns an nref-long index array, reco to gen
-// -- match[i] is the gen jet matched to reco jet i, or
-// JetSmearing::kUnmatched (-999, as the forest's refpt) for none. Check it
-// before indexing, genpt[-999] is out of bounds. Mode, default OneToOne:
-//   OneToOne : closest pairs first, no jet matched twice, dR < dRFraction R
-//   Nearest  : each reco jet takes its closest gen jet (can be shared)
-//   JME      : JER twiki / SmearedJetProducerT rule, fixed -- closest gen jet
-//              with dR < R/2 and |pT - pT_gen| < 3 sigma_JER pT, sigma_JER
-//              looked up here (jtpt JEC-corrected)
+//   std::vector<int> match = smearer.Match(nref, ptCorr, jteta, jtphi,
+//                                          ngen, genpt, geneta, genphi,
+//                                          0.4, rho, JetSmearing::Mode::JME);
+// match[i] is now index of gen jet matched to reco jet i
 //
-//   std::vector<int> match = smearer.Match(nref, ptCorr, jteta, jtphi, ngen,
-//                                          genpt, geneta, genphi, 0.4, rho,
-//                                          JetSmearing::Mode::JME);
-//   double genPt = match[i] >= 0 ? genpt[match[i]] : -1;
+// Reproduce HiForest ref jet collection with dRFraction=1.0 and OneToOne mode
+// JetSmearing::Match(nref, jteta, jtphi, ngen, geneta, genphi, R, mode, dRFraction);
 //
-// OneToOne/Nearest need no files: JetSmearing::Match(nref, jteta, jtphi,
-// ngen, geneta, genphi, 0.4, mode, dRFraction); the forest's ref* matching
-// is OneToOne with dRFraction 1.0
-//
-// Ordering: JetSmearing::Order(n, pt), n-long, highest pT first -- order[i]
-// is the original index of the i-th hardest jet; sort after smearing
+// JetSmearing::Order(n, pt) returns n long array,
+// each entry indexes an entry in pt (input array) by descending value
 //
 //   std::vector<int> order = JetSmearing::Order(nref, ptSmeared);
-//   int g = match[order[0]]; // leading jet's gen jet
+// match[order[0]] is now leading reco jet's matched gen jet index
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <initializer_list>
@@ -126,7 +112,6 @@ inline std::vector<std::string> getTokens(const std::string &fLine) {
 }
 } // namespace jer_detail
 
-// shared with JetCorrector.h
 #ifndef JET_VARIATION_ENUM
 #define JET_VARIATION_ENUM
 enum class Variation { NOMINAL = 0, DOWN = 1, UP = 2 };
@@ -384,7 +369,7 @@ public:
           m_formula = std::make_shared<TFormula>(uniqueName.c_str(),
                                                  m_formula_str.c_str());
           if (gROOT) {
-            // detach from ROOT global list, otherwise it still double-frees at teardown
+            // detach from ROOT global list, otherwise still double-frees at teardown
             gROOT->GetListOfFunctions()->Remove(m_formula.get());
           }
           // end fix
@@ -729,8 +714,7 @@ private:
 
 // END VENDORED CODE
 
-// below implements JME's correctionlib JERSmear (jer_smear.json) and the
-// hybrid method of
+// below is JME's correctionlib JERSmear (jer_smear.json) and the hybrid method of
 // cms-sw/cmssw/tree/master/PhysicsTools/PatUtils/interface/SmearedJetProducerT.h
 
 namespace JetSmearing {
@@ -856,8 +840,7 @@ private:
   std::uint64_t state_;
 };
 
-// rounds a product before it's added, so no compiler fuses the two (FMA) and
-// results don't depend on -ffp-contract
+// rounds a product before it's added, so no FMA fusing (bit-identity).
 inline double Rounded(double x) {
   volatile double r = x;
   return r;
@@ -866,8 +849,7 @@ inline double Rounded(double x) {
 } // namespace detail
 
 // N(0,1) from (pT, eta, rho, eventID), bit for bit as JERSmear's hashprng
-// (u*u + v*v fused as correctionlib's build has it; verified against
-// correctionlib 2.9.0 on jer_smear.json, 200k jets)
+// verified against correctionlib 2.9.0 on jer_smear.json, 200k jets
 inline double HashNormal(double pt, double eta, double rho,
                          std::int64_t eventID) {
   std::uint64_t data[4];
@@ -902,25 +884,25 @@ struct Result {
   double resolution = 0.0; // sigma_JER used (getResolution() output)
   double scaleFactor = 1.0;
   bool matched = false; // scaling method applied
+
+  void Print() const {
+    printf("smearFactor  %.6f\n", smearFactor);
+    printf("sigma_JER    %.6f\n", resolution);
+    printf("JER SF       %.6f\n", scaleFactor);
+    printf("branch       %s\n",
+           matched ? "scaling (gen matched)" : "stochastic, or left alone");
+  }
 };
 
-// genPt < 0 is no matched gen jet
-// this function requires user provides existing gen matched jet pt
-inline Result
-ComputeSmearFactor(double recoPt, double eta, double rho, double genPt,
-                   std::int64_t eventID,
-                   const JetSmearerJME::JetResolution &resolution,
-                   const JetSmearerJME::JetResolutionScaleFactor &resolutionSF,
-                   Variation variation = Variation::NOMINAL,
-                   const std::string &uncertaintySource = "",
-                   double dPtMaxFactor = 3.0, Method method = Method::Hybrid) {
+// smear factor from sigma_JER and SF already looked up
+inline Result ComputeSmearFactor(double recoPt, double eta, double rho,
+                                 double genPt, std::int64_t eventID,
+                                 double resolution, double scaleFactor,
+                                 double dPtMaxFactor = 3.0,
+                                 Method method = Method::Hybrid) {
   Result r;
-  r.resolution = resolution.getResolution(
-      JetSmearerJME::JetParameters().setJetPt(recoPt).setJetEta(eta).setRho(
-          rho));
-  r.scaleFactor = resolutionSF.getScaleFactor(
-      JetSmearerJME::JetParameters().setJetPt(recoPt).setJetEta(eta), variation,
-      uncertaintySource);
+  r.resolution = resolution;
+  r.scaleFactor = scaleFactor;
 
   const bool wellMatched =
       genPt >= 0 &&
@@ -939,22 +921,38 @@ ComputeSmearFactor(double recoPt, double eta, double rho, double genPt,
   return r;
 }
 
+// same, looking sigma_JER and SF up in the text-file readers
+inline Result
+ComputeSmearFactor(double recoPt, double eta, double rho, double genPt,
+                   std::int64_t eventID,
+                   const JetSmearerJME::JetResolution &resolution,
+                   const JetSmearerJME::JetResolutionScaleFactor &resolutionSF,
+                   Variation variation = Variation::NOMINAL,
+                   const std::string &uncertaintySource = "",
+                   double dPtMaxFactor = 3.0, Method method = Method::Hybrid) {
+  const double resolutionValue = resolution.getResolution(
+      JetSmearerJME::JetParameters().setJetPt(recoPt).setJetEta(eta).setRho(
+          rho));
+  const double sf = resolutionSF.getScaleFactor(
+      JetSmearerJME::JetParameters().setJetPt(recoPt).setJetEta(eta), variation,
+      uncertaintySource);
+  return ComputeSmearFactor(recoPt, eta, rho, genPt, eventID, resolutionValue,
+                            sf, dPtMaxFactor, method);
+}
+
 inline double SmearedPt(double recoPt, double smearFactor) {
   return recoPt * smearFactor;
 }
 
-// pT order and reco to gen matching of forest-style jet arrays
-
-// unmatched entry of a match map, same filler as the forest's refpt
+// unmatched entry
 constexpr int kUnmatched = -999;
 
 enum class Mode { OneToOne, Nearest, JME };
 
-// JME's matching rule (JER twiki, SmearedJetProducerT), fixed
+// JME matching conditions
 constexpr double kJMEdRFraction = 0.5; // dR < R/2
 constexpr double kJMENSigma = 3.0;     // |pT - pT_gen| < 3 sigma_JER pT
 
-// equal pT keep their original order
 template <typename T> std::vector<int> Order(int n, const T *pt) {
   std::vector<int> order(n);
   std::iota(order.begin(), order.end(), 0);
@@ -971,8 +969,8 @@ inline double DeltaR(double eta1, double phi1, double eta2, double phi2) {
 
 namespace detail {
 
-// each reco jet takes its closest gen jet within maxDR, plus JME's pT window
-// when jtpt is given
+// each reco jet matches closest gen jet within maxDR
+// checks JME pT window if jtpt is provided
 template <typename T>
 std::vector<int> MatchNearest(int nref, const T *jteta, const T *jtphi,
                               int ngen, const T *geneta, const T *genphi,
@@ -1027,8 +1025,6 @@ std::vector<int> MatchOneToOne(int nref, const T *jteta, const T *jtphi,
 
 } // namespace detail
 
-// OneToOne / Nearest, no files needed; JME needs sigma_JER, use
-// JetSmearer::Match
 template <typename T>
 std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
                        const T *geneta, const T *genphi, double coneR,
@@ -1045,15 +1041,221 @@ std::vector<int> Match(int nref, const T *jteta, const T *jtphi, int ngen,
                                dRFraction * coneR);
 }
 
+// JER SF in JME's 2024+ format: a JEC-style formula file, SF(pT) =
+// sigma_data / sigma_MC per eta bin -- {1 JetEta 1 JetPt <formula> Correction
+// ...}, each record: eta range, N, pT range, parameters; pT clamped to the
+// record's range, evaluated in double. 1 outside every eta bin
+class FormulaScaleFactor {
+public:
+  explicit FormulaScaleFactor(const std::string &file) {
+    std::ifstream in(file);
+    if (!in) {
+      throw std::runtime_error("JetSmearer: can't open " + file);
+    }
+    std::string line;
+    bool header = false;
+    while (std::getline(in, line)) {
+      std::vector<std::string> t = Tokens(line);
+      if (t.empty()) {
+        continue;
+      }
+      if (!header) {
+        // {nBin binVar nDep depVar formula Correction label}
+        if (t.size() < 5 || std::stoi(t[0]) != 1 || std::stoi(t[2]) != 1 ||
+            (t[1] != "JetEta" && t[1] != "JetAbsEta") || t[3] != "JetPt") {
+          throw std::runtime_error("JetSmearer: " + file +
+                                   ": expected {1 JetEta 1 JetPt <formula> "
+                                   "Correction ...}");
+        }
+        absEta_ = t[1] == "JetAbsEta";
+        formula_ = std::make_shared<TFormula>(
+            ("JetSmearerSF_" + std::to_string(Counter()++)).c_str(),
+            t[4].c_str());
+        if (gROOT) {
+          gROOT->GetListOfFunctions()->Remove(formula_.get());
+        }
+        header = true;
+        continue;
+      }
+      Record r;
+      r.etaLo = std::stod(t[0]);
+      r.etaHi = std::stod(t[1]);
+      const int n = std::stoi(t[2]);
+      if (n < 2 || (int)t.size() < 3 + n) {
+        throw std::runtime_error("JetSmearer: " + file + ": bad record");
+      }
+      r.ptLo = std::stod(t[3]);
+      r.ptHi = std::stod(t[4]);
+      for (int i = 2; i < n; i++) {
+        r.par.push_back(std::stod(t[3 + i]));
+      }
+      records_.push_back(r);
+    }
+    if (!header || records_.empty()) {
+      throw std::runtime_error("JetSmearer: " + file + ": no records");
+    }
+  }
+
+  double Evaluate(double pt, double eta) const {
+    const double e = absEta_ ? std::abs(eta) : eta;
+    for (const Record &r : records_) {
+      if (e >= r.etaLo && e < r.etaHi) {
+        formula_->SetParameters(r.par.data());
+        return formula_->Eval(std::min(std::max(pt, r.ptLo), r.ptHi));
+      }
+    }
+    return 1;
+  }
+
+  // "{... <formula> Correction ...}" rather than "{... ScaleFactor}"
+  static bool IsFormulaFile(const std::string &file) {
+    std::ifstream in(file);
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line.find_first_not_of(" \t\r") == std::string::npos) {
+        continue;
+      }
+      return line.find("Correction") != std::string::npos &&
+             line.find("ScaleFactor") == std::string::npos;
+    }
+    return false;
+  }
+
+  // whitespace tokens, braces dropped
+  static std::vector<std::string> Tokens(std::string line) {
+    for (char &c : line) {
+      if (c == '{' || c == '}') {
+        c = ' ';
+      }
+    }
+    std::istringstream ss(line);
+    std::vector<std::string> t;
+    std::string w;
+    while (ss >> w) {
+      t.push_back(w);
+    }
+    return t;
+  }
+
+private:
+  struct Record {
+    double etaLo, etaHi, ptLo, ptHi;
+    std::vector<double> par;
+  };
+  std::vector<Record> records_;
+  std::shared_ptr<TFormula> formula_;
+  bool absEta_ = false;
+
+  static int &Counter() {
+    static int n = 0;
+    return n;
+  }
+};
+
+// JER SF uncertainty in JME's 2024+ format: a JEC-style uncertainty file,
+// {1 JetEta 1 JetPt "" Correction Uncertainty}, each record: eta range, N,
+// then (pT, up, down) points. As JME's correctionlib JSON: the first value is
+// the uncertainty, linear in pT between points, clamped at the ends, applied
+// symmetric (SF * (1 +- unc)). 0 outside every eta bin
+class ScaleFactorUncertainty {
+public:
+  explicit ScaleFactorUncertainty(const std::string &file) {
+    std::ifstream in(file);
+    if (!in) {
+      throw std::runtime_error("JetSmearer: can't open " + file);
+    }
+    std::string line;
+    bool header = false;
+    while (std::getline(in, line)) {
+      std::vector<std::string> t = FormulaScaleFactor::Tokens(line);
+      if (t.empty()) {
+        continue;
+      }
+      if (!header) {
+        if (line.find("Uncertainty") == std::string::npos || t.size() < 4 ||
+            t[1] != "JetEta" || t[3] != "JetPt") {
+          throw std::runtime_error("JetSmearer: " + file +
+                                   ": expected {1 JetEta 1 JetPt \"\" "
+                                   "Correction Uncertainty}");
+        }
+        header = true;
+        continue;
+      }
+      Record r;
+      r.etaLo = std::stod(t[0]);
+      r.etaHi = std::stod(t[1]);
+      const int n = std::stoi(t[2]);
+      for (int i = 0; i + 2 < n && 5 + i < (int)t.size(); i += 3) {
+        r.pt.push_back(std::stod(t[3 + i]));
+        r.unc.push_back(std::stod(t[4 + i]));
+      }
+      if (r.pt.empty()) {
+        throw std::runtime_error("JetSmearer: " + file + ": bad record");
+      }
+      records_.push_back(r);
+    }
+    if (!header || records_.empty()) {
+      throw std::runtime_error("JetSmearer: " + file + ": no records");
+    }
+  }
+
+  double Evaluate(double pt, double eta) const {
+    for (const Record &r : records_) {
+      if (eta < r.etaLo || eta >= r.etaHi) {
+        continue;
+      }
+      if (pt <= r.pt.front()) {
+        return r.unc.front();
+      }
+      if (pt >= r.pt.back()) {
+        return r.unc.back();
+      }
+      for (size_t i = 0; i + 1 < r.pt.size(); i++) {
+        if (pt >= r.pt[i] && pt < r.pt[i + 1]) {
+          return r.unc[i] + (r.unc[i + 1] - r.unc[i]) /
+                                (r.pt[i + 1] - r.pt[i]) * (pt - r.pt[i]);
+        }
+      }
+    }
+    return 0;
+  }
+
+private:
+  struct Record {
+    double etaLo, etaHi;
+    std::vector<double> pt, unc;
+  };
+  std::vector<Record> records_;
+};
+
 } // namespace JetSmearing
 
 class JetSmearer {
 public:
+  // SF file: the table format ({... ScaleFactor}, down/up columns included)
+  // or JME's 2024+ formula format ({... Correction ...}), told apart by the
+  // header; the latter takes its variations from the SF uncertainty file
   JetSmearer(const std::string &resolutionFile,
              const std::string &scaleFactorFile,
              JetSmearing::Method method = JetSmearing::Method::Hybrid)
-      : resolution_(resolutionFile), scaleFactor_(scaleFactorFile),
-        method_(method) {}
+      : resolution_(resolutionFile), method_(method) {
+    LoadScaleFactor(scaleFactorFile);
+  }
+
+  JetSmearer(const std::string &resolutionFile,
+             const std::string &scaleFactorFile,
+             const std::string &scaleFactorUncertaintyFile,
+             JetSmearing::Method method = JetSmearing::Method::Hybrid)
+      : resolution_(resolutionFile), method_(method) {
+    LoadScaleFactor(scaleFactorFile);
+    if (!formulaSF_) {
+      throw std::runtime_error("JetSmearer: " + scaleFactorFile +
+                               " is a table SF file, its down/up are in the "
+                               "file; no SF uncertainty file with it");
+    }
+    sfUncertainty_ = std::make_shared<JetSmearing::ScaleFactorUncertainty>(
+        scaleFactorUncertaintyFile);
+  }
 
   void SetMethod(JetSmearing::Method method) { method_ = method; }
   JetSmearing::Method GetMethod() const { return method_; }
@@ -1064,16 +1266,46 @@ public:
         JetSmearerJME::JetParameters().setJetPt(pt).setJetEta(eta).setRho(rho));
   }
 
-  // smear factor, resolution/scale factor used, scaling or stochastic
-  // see JetSmearing::Result above
+  // JER SF, at the JEC-corrected pT
+  double ScaleFactor(double pt, double eta,
+                     Variation variation = Variation::NOMINAL,
+                     const std::string &uncertaintySource = "") const {
+    if (tableSF_) {
+      return tableSF_->getScaleFactor(
+          JetSmearerJME::JetParameters().setJetPt(pt).setJetEta(eta), variation,
+          uncertaintySource);
+    }
+    if (!uncertaintySource.empty()) {
+      throw std::runtime_error("JetSmearer: uncertainty sources need a table "
+                               "SF file");
+    }
+    const double sf = formulaSF_->Evaluate(pt, eta);
+    if (variation == Variation::NOMINAL) {
+      return sf;
+    }
+    if (!sfUncertainty_) {
+      throw std::runtime_error("JetSmearer: Variation::UP/DOWN with a formula "
+                               "SF file needs the SF uncertainty file");
+    }
+    const double unc = sfUncertainty_->Evaluate(pt, eta);
+    return variation == Variation::UP ? sf * (1 + unc) : sf * (1 - unc);
+  }
+
+  // smear factor, resolution/scale factor used
   JetSmearing::Result Smear(double recoPt, double eta, double rho, double genPt,
                             std::int64_t eventID,
                             Variation variation = Variation::NOMINAL,
                             const std::string &uncertaintySource = "",
                             double dPtMaxFactor = 3.0) const {
+    if (tableSF_) {
+      return JetSmearing::ComputeSmearFactor(
+          recoPt, eta, rho, genPt, eventID, resolution_, *tableSF_, variation,
+          uncertaintySource, dPtMaxFactor, method_);
+    }
     return JetSmearing::ComputeSmearFactor(
-        recoPt, eta, rho, genPt, eventID, resolution_, scaleFactor_, variation,
-        uncertaintySource, dPtMaxFactor, method_);
+        recoPt, eta, rho, genPt, eventID, Resolution(recoPt, eta, rho),
+        ScaleFactor(recoPt, eta, variation, uncertaintySource), dPtMaxFactor,
+        method_);
   }
 
   // in: reco jet {pT, eta, rho}, gen matched jet pT, event number
@@ -1088,8 +1320,8 @@ public:
     return JetSmearing::SmearedPt(recoPt, r.smearFactor);
   }
 
-  // setter style, like JetCorrector: the jet is held by the object, the
-  // Get... methods use it. Throw if an input was never set
+  // setters and getters
+  // throw if an input was never set
   void SetJetPT(double value) { setPt_ = value; }
   void SetJetEta(double value) { setEta_ = value; }
   void SetRho(double value) { setRho_ = value; }
@@ -1120,9 +1352,12 @@ public:
     return Resolution(setPt_, setEta_, setRho_);
   }
 
-  // reco to gen match, nref-long, JetSmearing::kUnmatched for none; jtpt
-  // JEC-corrected, rho for sigma_JER (JME mode); dRFraction for OneToOne
-  // and Nearest only, JME is always R/2 and 3 sigma_JER
+  double GetScaleFactor(Variation variation = Variation::NOMINAL,
+                        const std::string &uncertaintySource = "") const {
+    CheckSet(false);
+    return ScaleFactor(setPt_, setEta_, variation, uncertaintySource);
+  }
+
   template <typename T>
   std::vector<int>
   Match(int nref, const T *jtpt, const T *jteta, const T *jtphi, int ngen,
@@ -1144,10 +1379,22 @@ public:
 
 private:
   JetSmearerJME::JetResolution resolution_;
-  JetSmearerJME::JetResolutionScaleFactor scaleFactor_;
+  // one of the two SF formats, and the formula format's uncertainty
+  std::shared_ptr<JetSmearerJME::JetResolutionScaleFactor> tableSF_;
+  std::shared_ptr<JetSmearing::FormulaScaleFactor> formulaSF_;
+  std::shared_ptr<JetSmearing::ScaleFactorUncertainty> sfUncertainty_;
   JetSmearing::Method method_;
 
-  // setter-style inputs, NaN / false until set
+  void LoadScaleFactor(const std::string &file) {
+    if (JetSmearing::FormulaScaleFactor::IsFormulaFile(file)) {
+      formulaSF_ = std::make_shared<JetSmearing::FormulaScaleFactor>(file);
+    } else {
+      tableSF_ =
+          std::make_shared<JetSmearerJME::JetResolutionScaleFactor>(file);
+    }
+  }
+
+  // setter-style inputs, NaN until set
   double setPt_ = std::nan("");
   double setEta_ = std::nan("");
   double setRho_ = std::nan("");

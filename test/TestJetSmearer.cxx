@@ -526,10 +526,70 @@ static void TestSetters() {
               smearer.Smear(100.0, 0.5, 2.0, genPt, 12345).smearFactor,
           "GetSmear == Smear, genPt " + std::to_string(genPt));
   }
+  smearer.GetSmear().Print();
   smearer.SetJetPT(200.0); // the rest keep their values
   Check(smearer.GetSmearedPT() ==
             smearer.SmearedPt(200.0, 0.5, 2.0, 95.0, 12345),
         "inputs not set again keep their value");
+}
+
+// JME's 2024+ SF format: JEC-style formula file, variations from a JEC-style
+// uncertainty file (first value, symmetric, linear in pT)
+static void TestFormulaScaleFactor() {
+  std::printf("formula SF (2024+ format)\n");
+  const std::string sf =
+      Write("SFformula.txt", "{1 JetEta 1 JetPt [0]+[1]*x Correction "
+                             "L2Relative}\n"
+                             "-5.191 0 4 10 1000 1.1 0.0001\n"
+                             "0 5.191 4 10 1000 1.2 0\n");
+  // first value 0.05 -> 0.15 over pT 10 -> 1000; the second column is ignored
+  const std::string unc =
+      Write("SFunc.txt", "{1 JetEta 1 JetPt \"\" Correction "
+                         "Uncertainty}\n"
+                         "-5.191 5.191 6 10 0.05 0.9 1000 0.15 0.9\n");
+  JetSmearer noUnc(ResolutionFile(), sf);
+  Near(noUnc.ScaleFactor(100, -1), 1.11, 1e-12, "SF = [0] + [1] pT");
+  Near(noUnc.ScaleFactor(5, -1), 1.101, 1e-12, "pT below the range clamps");
+  Near(noUnc.ScaleFactor(2000, -1), 1.2, 1e-12, "pT above the range clamps");
+  Near(noUnc.ScaleFactor(100, 0.5), 1.2, 1e-12, "second eta bin");
+  Check(noUnc.ScaleFactor(100, 6.0) == 1.0, "eta outside every bin: 1");
+  bool threw = false;
+  try {
+    noUnc.ScaleFactor(100, -1, Variation::UP);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  Check(threw, "UP without the SF uncertainty file throws");
+
+  JetSmearer withUnc(ResolutionFile(), sf, unc);
+  const double u = 0.05 + 0.10 * (100 - 10) / 990.0;
+  Near(withUnc.ScaleFactor(100, -1), 1.11, 1e-12, "nominal unchanged");
+  Near(withUnc.ScaleFactor(100, -1, Variation::UP), 1.11 * (1 + u), 1e-12,
+       "UP = SF (1 + unc), unc linear in pT");
+  Near(withUnc.ScaleFactor(100, -1, Variation::DOWN), 1.11 * (1 - u), 1e-12,
+       "DOWN = SF (1 - unc)");
+  Near(withUnc.ScaleFactor(5000, -1, Variation::UP), 1.2 * 1.15, 1e-12,
+       "SF and unc both clamp above the range");
+  Check(withUnc.Smear(100, -1, 2.0, 95, 7, Variation::UP).scaleFactor ==
+            withUnc.ScaleFactor(100, -1, Variation::UP),
+        "Smear uses the formula SF");
+  withUnc.SetJetPT(100);
+  withUnc.SetJetEta(-1);
+  withUnc.SetRho(2.0);
+  Check(withUnc.GetScaleFactor(Variation::DOWN) ==
+            withUnc.ScaleFactor(100, -1, Variation::DOWN),
+        "GetScaleFactor == ScaleFactor");
+
+  threw = false;
+  try {
+    JetSmearer table(ResolutionFile(), ScaleFactorFile(), unc);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  Check(threw, "SF uncertainty file with a table SF file throws");
+  JetSmearer table(ResolutionFile(), ScaleFactorFile());
+  Check(table.ScaleFactor(100, 0.5, Variation::UP) == 1.3f,
+        "table SF file: up from its own column, as before");
 }
 
 int main() {
@@ -553,6 +613,7 @@ int main() {
   TestMatchOneToOne();
   TestMatchJME();
   TestSetters();
+  TestFormulaScaleFactor();
   std::printf("%d/%d checks passed\n", nCheck - nFail, nCheck);
   return nFail == 0 ? 0 : 1;
 }
