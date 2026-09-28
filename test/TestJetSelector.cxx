@@ -306,8 +306,9 @@ static void TestVetoMaps() {
     }
     std::string where = std::string(p.tag) + " eta " + std::to_string(p.eta) +
                         " phi " + std::to_string(p.phi);
-    Check(ana->IsVeto(p.eta, p.phi) == p.analysis, "analysis " + where);
-    Check(cal->IsVeto(p.eta, p.phi) == p.calibration, "calibration " + where);
+    Check(ana->InVetoRegion(p.eta, p.phi) == p.analysis, "analysis " + where);
+    Check(cal->InVetoRegion(p.eta, p.phi) == p.calibration,
+          "calibration " + where);
   }
   delete ana;
   delete cal;
@@ -315,8 +316,8 @@ static void TestVetoMaps() {
   // outside the map returns the file's flow value, 0, not vetoed
   JetSelector js(JetSelector::System::pp, kJetID,
                  VetoFile("Summer24Prompt24_RunBCDEFGHI_V1"));
-  Check(!js.IsVeto(5.3, 0.0), "eta beyond map not vetoed");
-  Check(!js.IsVeto(-5.3, 0.0), "eta below map not vetoed");
+  Check(!js.InVetoRegion(5.3, 0.0), "eta beyond map not vetoed");
+  Check(!js.InVetoRegion(-5.3, 0.0), "eta below map not vetoed");
 }
 
 static void TestSelectionAndEventVeto() {
@@ -327,8 +328,8 @@ static void TestSelectionAndEventVeto() {
   const double vEta = -3.9260, vPhi = 2.5744; // vetoed
   const double cEta = -2.4110, cPhi = 1.8762; // clean
   auto sel = [&](double eta, double phi, const Jet &x) {
-    return js.JetSelection(eta, phi, x.CHF, x.NHF, x.CEF, x.NEF, x.MUF, x.CHM,
-                           x.NHM, x.CEM, x.NEM, x.MUM);
+    return !js.VetoJet(eta, phi, x.CHF, x.NHF, x.CEF, x.NEF, x.MUF, x.CHM,
+                       x.NHM, x.CEM, x.NEM, x.MUM);
   };
   auto ev = [&](double pt, double eta, double phi, const Jet &x) {
     return js.VetoEvent(pt, eta, phi, x.CHF, x.NHF, x.CEF, x.NEF, x.MUF,
