@@ -8,16 +8,7 @@
 // This class applies JEC for any given level using TF1 as the workhorse
 // Supposedly runs faster than v1.0
 // v3.0: one can add list of text files to apply them one by one
-// v4.0: JetUncertainty (v1.0, Yi Chen) merged in, and JES variations:
-//       GetCorrectedPT(Variation::UP / DOWN) = corrected pT * (1 +- JEU),
-//       GetUncertainty() = {down, up} fractions at the corrected pT, read in
-//       CMSSW's (pT, up, down) order. CorrectedPt(...) / Uncertainty(...) take
-//       the jet as arguments instead of setters, like JetSmearer and
-//       JetSelector; phi, rho and area can be left out, which throws if a
-//       loaded file needs them (rho and area: L1FastJet). Correct(...) /
-//       GetCorrect() give the details, JetCorrecting::Result: pT and factor
-//       after each level, total factor, JES uncertainty; Result::Print()
-//       writes them out
+// v4.0: merged with JetUncertainty v1.0, Yi Chen
 
 #include <iostream>
 #include <fstream>
